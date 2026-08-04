@@ -120,6 +120,82 @@ def last_source_commit(log_path: Path) -> Optional[str]:
     return matches[-1] if matches else None
 
 
+def seed_pending_wiki(
+    repo: Path, main_ref: str, pending_ref: str
+) -> Optional[str]:
+    """Apply a managed pending branch's Wiki-only delta to the current tree."""
+    repo = repo.resolve()
+    main_sha = _commit_sha(repo, main_ref)
+    pending_sha = _commit_sha(repo, pending_ref)
+    commit_message = run_git(repo, "log", "-1", "--format=%B", pending_sha)
+    if "LLM-Wiki-Managed: true" not in commit_message:
+        raise ContextError(f"pending ref {pending_ref} is not managed by LLM Wiki")
+
+    merge_base = run_git(repo, "merge-base", main_sha, pending_sha).strip()
+    pending_changes = changed_files(repo, merge_base, pending_sha)
+    non_wiki_paths = []
+    pending_wiki_paths: set[str] = set()
+    for change in pending_changes:
+        paths = [change["path"]]
+        if "previous_path" in change:
+            paths.append(change["previous_path"])
+        for path in paths:
+            if _is_wiki_path(path):
+                pending_wiki_paths.add(path)
+            else:
+                non_wiki_paths.append(path)
+    if non_wiki_paths:
+        raise ContextError(
+            "pending ref contains non-Wiki changes: " + ", ".join(sorted(non_wiki_paths))
+        )
+
+    main_changes = changed_files(repo, merge_base, main_sha)
+    main_wiki_paths: set[str] = set()
+    for change in main_changes:
+        paths = [change["path"]]
+        if "previous_path" in change:
+            paths.append(change["previous_path"])
+        main_wiki_paths.update(path for path in paths if _is_wiki_path(path))
+    overlap = sorted(main_wiki_paths & pending_wiki_paths)
+    if overlap:
+        raise ContextError(
+            "main and pending Wiki changes overlap: " + ", ".join(overlap)
+        )
+
+    if pending_wiki_paths:
+        patch = _run_git_bytes(
+            repo,
+            "diff",
+            "--binary",
+            merge_base,
+            pending_sha,
+            "--",
+            "docs/wiki",
+        )
+        applied = subprocess.run(
+            ["git", "-C", str(repo), "apply", "--whitespace=nowarn", "-"],
+            input=patch,
+            check=False,
+            capture_output=True,
+        )
+        if applied.returncode != 0:
+            detail = applied.stderr.decode("utf-8", "replace").strip()
+            raise ContextError(f"pending Wiki patch did not apply: {detail}")
+
+    cursor = last_source_commit(repo / "docs/wiki/log.md")
+    if cursor:
+        ancestor = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", cursor, main_sha],
+            check=False,
+            capture_output=True,
+        )
+        if ancestor.returncode != 0:
+            raise ContextError(
+                f"pending source commit {cursor} is not an ancestor of {main_sha}"
+            )
+    return cursor
+
+
 def _tokens(path: str) -> set[str]:
     return {
         token.lower()
@@ -245,15 +321,21 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-files", type=int, default=200)
     parser.add_argument("--max-diff-bytes", type=int, default=1_000_000)
+    parser.add_argument("--pending-ref")
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        base = args.base
+        if args.pending_ref:
+            pending_cursor = seed_pending_wiki(args.repo, args.head, args.pending_ref)
+            if pending_cursor:
+                base = pending_cursor
         context = prepare_context(
             args.repo,
-            args.base,
+            base,
             args.head,
             args.output_dir,
             args.max_files,

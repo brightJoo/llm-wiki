@@ -8,6 +8,7 @@ from scripts.wiki.prepare_context import (
     ContextError,
     last_source_commit,
     prepare_context,
+    seed_pending_wiki,
 )
 
 
@@ -162,6 +163,52 @@ class PrepareContextTests(unittest.TestCase):
 
     def test_missing_log_has_no_source_commit(self) -> None:
         self.assertIsNone(last_source_commit(Path(self.temp_dir.name) / "missing.md"))
+
+    def test_seeds_managed_pending_wiki_and_returns_cursor(self) -> None:
+        source_commit = self.commit_files({"src/a.py": "a\n"}, "source change")
+        git(self.repo, "switch", "-c", "wiki-pending")
+        self.commit_files(
+            {
+                "docs/wiki/index.md": "# Wiki\n",
+                "docs/wiki/log.md": f"# Wiki log\n\n- Source: `github:{source_commit}`\n",
+            },
+            "docs(wiki): compile\n\nLLM-Wiki-Managed: true",
+        )
+        git(self.repo, "switch", "main")
+        self.commit_files({"src/b.py": "b\n"}, "next source change")
+
+        cursor = seed_pending_wiki(self.repo, "HEAD", "wiki-pending")
+
+        self.assertEqual(cursor, source_commit)
+        self.assertIn(
+            source_commit,
+            (self.repo / "docs/wiki/log.md").read_text(encoding="utf-8"),
+        )
+
+    def test_rejects_unmanaged_pending_branch(self) -> None:
+        self.commit_files({"src/a.py": "a\n"}, "source change")
+        git(self.repo, "switch", "-c", "wiki-pending")
+        self.commit_files({"docs/wiki/index.md": "# Wiki\n"}, "user branch")
+        git(self.repo, "switch", "main")
+
+        with self.assertRaisesRegex(ContextError, "not managed"):
+            seed_pending_wiki(self.repo, "HEAD", "wiki-pending")
+
+    def test_rejects_overlapping_main_and_pending_wiki_changes(self) -> None:
+        source_commit = self.commit_files({"src/a.py": "a\n"}, "source change")
+        git(self.repo, "switch", "-c", "wiki-pending")
+        self.commit_files(
+            {
+                "docs/wiki/index.md": "# Pending Wiki\n",
+                "docs/wiki/log.md": f"# Log\n\n- Source: `github:{source_commit}`\n",
+            },
+            "docs(wiki): compile\n\nLLM-Wiki-Managed: true",
+        )
+        git(self.repo, "switch", "main")
+        self.commit_files({"docs/wiki/index.md": "# Human Wiki\n"}, "human wiki edit")
+
+        with self.assertRaisesRegex(ContextError, "overlap"):
+            seed_pending_wiki(self.repo, "HEAD", "wiki-pending")
 
 
 if __name__ == "__main__":

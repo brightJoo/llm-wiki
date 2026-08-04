@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 3 ]]; then
-  echo "usage: create_patch.sh <base-ref> <patch-path> <metadata-path>" >&2
+if [[ $# -lt 3 || $# -gt 4 ]]; then
+  echo "usage: create_patch.sh <diff-base-ref> <patch-path> <metadata-path> [source-base-ref]" >&2
   exit 2
 fi
 
 base_ref=$1
 patch_path=$2
 metadata_path=$3
+source_base_ref=${4:-$base_ref}
 
 git rev-parse --verify "${base_ref}^{commit}" >/dev/null
+git rev-parse --verify "${source_base_ref}^{commit}" >/dev/null
 mkdir -p "$(dirname "$patch_path")" "$(dirname "$metadata_path")"
 
 temporary_index=$(mktemp "${TMPDIR:-/tmp}/llm-wiki-index.XXXXXX")
@@ -25,9 +27,9 @@ git read-tree "$base_ref"
 if [[ -e docs/wiki ]] || git ls-tree -d --name-only "$base_ref" docs/wiki | grep -q .; then
   git add -A -- docs/wiki
 fi
-git diff --cached --binary "$base_ref" -- docs/wiki > "$patch_path"
+git diff --cached --no-ext-diff --no-textconv --binary "$base_ref" -- docs/wiki > "$patch_path"
 
-python3 - "$patch_path" "$metadata_path" "$base_ref" <<'PY'
+python3 - "$patch_path" "$metadata_path" "$source_base_ref" <<'PY'
 import hashlib
 import json
 import sys

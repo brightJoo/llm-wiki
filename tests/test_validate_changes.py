@@ -33,7 +33,7 @@ class ValidateChangesTests(unittest.TestCase):
         )
         self.write(
             "docs/wiki/log.md",
-            f"# Wiki log\n\n- Source: `github:{self.old_sha}`\n",
+            f"# Wiki log\n\n## old — `github:{self.old_sha}`\n\n- Topics: search\n- Drift: None observed\n",
         )
         self.write(
             "docs/wiki/topics/search.md",
@@ -63,7 +63,7 @@ class ValidateChangesTests(unittest.TestCase):
         log = self.repo / "docs/wiki/log.md"
         log.write_text(
             log.read_text(encoding="utf-8")
-            + f"\n- Source: `{self.source_key}`\n  - Topics: search\n",
+            + f"\n## now — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
             encoding="utf-8",
         )
 
@@ -91,7 +91,7 @@ class ValidateChangesTests(unittest.TestCase):
         self.update_search()
         self.write(
             "docs/wiki/log.md",
-            f"# Rewritten log\n\n- Source: `{self.source_key}`\n",
+            f"# Rewritten log\n\n## now — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
         )
 
         self.assertIn("log_not_append_only", self.issue_codes())
@@ -102,7 +102,7 @@ class ValidateChangesTests(unittest.TestCase):
         log = self.repo / "docs/wiki/log.md"
         log.write_text(
             log.read_text(encoding="utf-8")
-            + f"\n- Source: `{duplicate_key}`\n",
+            + f"\n## now — `{duplicate_key}`\n\n- Topics: search\n- Drift: None observed\n",
             encoding="utf-8",
         )
 
@@ -169,6 +169,15 @@ class ValidateChangesTests(unittest.TestCase):
 
         self.assertIn("missing_source_commit", self.issue_codes())
 
+    def test_rejects_sources_section_without_repository_path(self) -> None:
+        self.write(
+            "docs/wiki/topics/search.md",
+            f"# Search\n\n## Sources\n\n- commit `{self.head_sha}`\n",
+        )
+        self.append_log()
+
+        self.assertIn("missing_source_path", self.issue_codes())
+
     def test_rejects_changed_file_count_over_limit(self) -> None:
         self.update_search()
         self.append_log()
@@ -199,7 +208,7 @@ class ValidateChangesTests(unittest.TestCase):
         external_log = self.repo / "generated-log.md"
         external_log.write_text(
             log_path.read_text(encoding="utf-8")
-            + f"\n- Source: `{self.source_key}`\n",
+            + f"\n## now — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
             encoding="utf-8",
         )
         log_path.unlink()
@@ -222,7 +231,7 @@ class ValidateChangesTests(unittest.TestCase):
         log = self.repo / "docs/wiki/log.md"
         log.write_text(
             log.read_text(encoding="utf-8")
-            + f"\n- Source: `github:{pending_sha}`\n",
+            + f"\n## pending — `github:{pending_sha}`\n\n- Topics: promotion\n- Drift: None observed\n",
             encoding="utf-8",
         )
         git(self.repo, "add", ".")
@@ -236,7 +245,7 @@ class ValidateChangesTests(unittest.TestCase):
         log = self.repo / "docs/wiki/log.md"
         log.write_text(
             log.read_text(encoding="utf-8")
-            + f"\n- Source: `{self.source_key}`\n  - Topics: search\n",
+            + f"\n## now — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
             encoding="utf-8",
         )
 
@@ -250,6 +259,48 @@ class ValidateChangesTests(unittest.TestCase):
         )
 
         self.assertEqual(issues, [])
+
+    def test_rejects_source_key_outside_structured_log_heading(self) -> None:
+        self.update_search()
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\nInjected source: `{self.source_key}`\n",
+            encoding="utf-8",
+        )
+
+        self.assertIn("invalid_log_entry", self.issue_codes())
+
+    def test_rejects_extra_source_key_after_valid_log_entry(self) -> None:
+        self.update_search()
+        self.append_log()
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\nInjected duplicate: `{self.source_key}`\n",
+            encoding="utf-8",
+        )
+
+        self.assertIn("invalid_log_entry", self.issue_codes())
+
+    def test_rejects_commit_only_outside_sources_section(self) -> None:
+        self.write(
+            "docs/wiki/topics/search.md",
+            f"# Search\n\nCommit {self.head_sha}\n\n## Sources\n\n- `src/search.py`\n",
+        )
+        self.append_log()
+
+        self.assertIn("missing_source_commit", self.issue_codes())
+
+    def test_rejects_broken_reference_style_link(self) -> None:
+        self.update_search()
+        self.write(
+            "docs/wiki/index.md",
+            "# Wiki\n\n- [Search][search-topic]\n\n[search-topic]: topics/missing.md\n",
+        )
+        self.append_log()
+
+        self.assertIn("broken_link", self.issue_codes())
 
 
 if __name__ == "__main__":

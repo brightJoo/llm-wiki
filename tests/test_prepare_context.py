@@ -7,6 +7,7 @@ from pathlib import Path
 from scripts.wiki.prepare_context import (
     ContextError,
     last_source_commit,
+    managed_source_commit,
     prepare_context,
     seed_pending_wiki,
 )
@@ -155,7 +156,9 @@ class PrepareContextTests(unittest.TestCase):
         first = "1" * 40
         second = "2" * 40
         log.write_text(
-            f"# Log\n\n- Source: `github:{first}`\n- Source: `github:{second}`\n",
+            "# Log\n\n"
+            f"## 2026-08-01T00:00:00Z — `github:{first}`\n\n- Topics: None\n- Drift: None observed\n\n"
+            f"## 2026-08-02T00:00:00Z — `github:{second}`\n\n- Topics: None\n- Drift: None observed\n",
             encoding="utf-8",
         )
 
@@ -164,13 +167,19 @@ class PrepareContextTests(unittest.TestCase):
     def test_missing_log_has_no_source_commit(self) -> None:
         self.assertIsNone(last_source_commit(Path(self.temp_dir.name) / "missing.md"))
 
+    def test_reads_cursor_from_managed_commit_trailer(self) -> None:
+        source_commit = self.commit_files({"src/a.py": "a\n"}, "source")
+        git(self.repo, "commit", "--allow-empty", "-m", "docs(wiki): cursor", "-m", f"LLM-Wiki-Managed: true\nLLM-Wiki-Source: github:{source_commit}")
+
+        self.assertEqual(managed_source_commit(self.repo, "HEAD"), source_commit)
+
     def test_seeds_managed_pending_wiki_and_returns_cursor(self) -> None:
         source_commit = self.commit_files({"src/a.py": "a\n"}, "source change")
         git(self.repo, "switch", "-c", "wiki-pending")
         self.commit_files(
             {
                 "docs/wiki/index.md": "# Wiki\n",
-                "docs/wiki/log.md": f"# Wiki log\n\n- Source: `github:{source_commit}`\n",
+                "docs/wiki/log.md": f"# Wiki log\n\n## now — `github:{source_commit}`\n\n- Topics: None\n- Drift: None observed\n",
             },
             "docs(wiki): compile\n\nLLM-Wiki-Managed: true",
         )
@@ -200,7 +209,7 @@ class PrepareContextTests(unittest.TestCase):
         self.commit_files(
             {
                 "docs/wiki/index.md": "# Pending Wiki\n",
-                "docs/wiki/log.md": f"# Log\n\n- Source: `github:{source_commit}`\n",
+                "docs/wiki/log.md": f"# Log\n\n## now — `github:{source_commit}`\n\n- Topics: None\n- Drift: None observed\n",
             },
             "docs(wiki): compile\n\nLLM-Wiki-Managed: true",
         )
@@ -216,7 +225,7 @@ class PrepareContextTests(unittest.TestCase):
         self.commit_files(
             {
                 "docs/wiki/index.md": "# Wiki\n",
-                "docs/wiki/log.md": f"# Log\n\n- Source: `github:{source_commit}`\n",
+                "docs/wiki/log.md": f"# Log\n\n## now — `github:{source_commit}`\n\n- Topics: None\n- Drift: None observed\n",
             },
             "docs(wiki): compile\n\nLLM-Wiki-Managed: true",
         )
@@ -228,6 +237,58 @@ class PrepareContextTests(unittest.TestCase):
         cursor = seed_pending_wiki(self.repo, "HEAD", "wiki-pending")
 
         self.assertEqual(cursor, source_commit)
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+
+    def test_ignores_stale_merged_branch_with_unrelated_main_wiki_change(self) -> None:
+        source_commit = self.commit_files({"src/a.py": "a\n"}, "source change")
+        git(self.repo, "switch", "-c", "wiki-pending")
+        self.commit_files(
+            {
+                "docs/wiki/index.md": "# Wiki\n",
+                "docs/wiki/log.md": f"# Log\n\n## now — `github:{source_commit}`\n\n- Topics: None\n- Drift: None observed\n",
+            },
+            f"docs(wiki): compile\n\nLLM-Wiki-Managed: true\nLLM-Wiki-Source: github:{source_commit}",
+        )
+        pending_tip = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "switch", "main")
+        git(self.repo, "checkout", pending_tip, "--", "docs/wiki")
+        git(self.repo, "commit", "-m", "squash Wiki PR")
+        self.commit_files(
+            {"docs/wiki/topics/human.md": "# Human\n"}, "unrelated human Wiki edit"
+        )
+
+        cursor = seed_pending_wiki(self.repo, "HEAD", "wiki-pending")
+
+        self.assertEqual(cursor, source_commit)
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+
+    def test_ignores_stale_merged_branch_after_later_log_entry(self) -> None:
+        source_commit = self.commit_files({"src/a.py": "a\n"}, "source change")
+        git(self.repo, "switch", "-c", "wiki-pending")
+        self.commit_files(
+            {
+                "docs/wiki/index.md": "# Wiki\n",
+                "docs/wiki/log.md": f"# Log\n\n## first — `github:{source_commit}`\n\n- Topics: None\n- Drift: None observed\n",
+            },
+            f"docs(wiki): compile\n\nLLM-Wiki-Managed: true\nLLM-Wiki-Source: github:{source_commit}",
+        )
+        pending_tip = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "switch", "main")
+        git(self.repo, "checkout", pending_tip, "--", "docs/wiki")
+        git(self.repo, "commit", "-m", "squash Wiki PR")
+        later_source = self.commit_files({"src/b.py": "b\n"}, "later source")
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\n## later — `github:{later_source}`\n\n- Topics: None\n- Drift: None observed\n",
+            encoding="utf-8",
+        )
+        git(self.repo, "add", "docs/wiki/log.md")
+        git(self.repo, "commit", "-m", "later Wiki entry")
+
+        cursor = seed_pending_wiki(self.repo, "HEAD", "wiki-pending")
+
+        self.assertEqual(cursor, later_source)
         self.assertEqual(git(self.repo, "status", "--porcelain"), "")
 
 

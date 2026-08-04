@@ -1,17 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -ne 2 ]]; then
-  echo "usage: run_compiler.sh <prompt-path> <result-path>" >&2
+if [[ $# -ne 3 ]]; then
+  echo "usage: run_compiler.sh <policy-path> <prompt-path> <result-path>" >&2
   exit 2
 fi
 
-prompt_path=$1
-result_path=$2
+policy_path=$1
+prompt_path=$2
+result_path=$3
 claude_bin=${CLAUDE_BIN:-claude}
 max_turns=${CLAUDE_MAX_TURNS:-8}
 allowed_tools=${CLAUDE_ALLOWED_TOOLS:-Read,Grep,Glob,Edit,Write}
+tools=${CLAUDE_TOOLS:-Read,Grep,Glob,Edit,Write}
 
+if [[ ! -f "$policy_path" ]]; then
+  echo "run-compiler: policy file does not exist" >&2
+  exit 2
+fi
 if [[ ! -f "$prompt_path" ]]; then
   echo "run-compiler: prompt file does not exist" >&2
   exit 2
@@ -33,6 +39,13 @@ trap cleanup EXIT
 
 if ! "$claude_bin" \
   -p \
+  --safe-mode \
+  --disable-slash-commands \
+  --no-session-persistence \
+  --strict-mcp-config \
+  --disallowedTools 'mcp__*' \
+  --tools "$tools" \
+  --append-system-prompt-file "$policy_path" \
   --output-format json \
   --max-turns "$max_turns" \
   --allowedTools "$allowed_tools" \
@@ -60,4 +73,3 @@ then
 fi
 
 mv "$temporary_result" "$result_path"
-

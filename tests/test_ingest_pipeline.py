@@ -13,6 +13,8 @@ RUN_COMPILER = PROJECT_ROOT / "scripts/wiki/run_compiler.sh"
 CREATE_PATCH = PROJECT_ROOT / "scripts/wiki/create_patch.sh"
 PUBLISH_PR = PROJECT_ROOT / "scripts/wiki/publish_pr.sh"
 VALIDATOR = PROJECT_ROOT / "scripts/wiki/validate_changes.py"
+CONTEXT_PREPARER = PROJECT_ROOT / "scripts/wiki/prepare_context.py"
+SYNC_WIKI = PROJECT_ROOT / "scripts/wiki/sync_wiki.py"
 
 
 def run(
@@ -41,6 +43,8 @@ class CompilerTests(unittest.TestCase):
         self.root = Path(self.temp_dir.name)
         self.prompt = self.root / "prompt.md"
         self.prompt.write_text("Compile the Wiki.\n", encoding="utf-8")
+        self.policy = self.root / "policy.md"
+        self.policy.write_text("Only edit the Wiki.\n", encoding="utf-8")
         self.result = self.root / "result.json"
         self.capture = self.root / "capture.json"
         self.fake_claude = self.root / "fake-claude"
@@ -65,6 +69,7 @@ class CompilerTests(unittest.TestCase):
                 "CLAUDE_BIN": str(self.fake_claude),
                 "CLAUDE_MAX_TURNS": "5",
                 "CLAUDE_ALLOWED_TOOLS": "Read,Grep,Glob,Edit,Write",
+                "CLAUDE_TOOLS": "Read,Grep,Glob,Edit,Write",
                 "FAKE_CAPTURE": str(self.capture),
             }
         )
@@ -73,6 +78,7 @@ class CompilerTests(unittest.TestCase):
     def test_runs_claude_in_bounded_print_mode_and_writes_json(self) -> None:
         completed = run(
             str(RUN_COMPILER),
+            str(self.policy),
             str(self.prompt),
             str(self.result),
             cwd=PROJECT_ROOT,
@@ -89,6 +95,16 @@ class CompilerTests(unittest.TestCase):
             capture["argv"],
             [
                 "-p",
+                "--safe-mode",
+                "--disable-slash-commands",
+                "--no-session-persistence",
+                "--strict-mcp-config",
+                "--disallowedTools",
+                "mcp__*",
+                "--tools",
+                "Read,Grep,Glob,Edit,Write",
+                "--append-system-prompt-file",
+                str(self.policy),
                 "--output-format",
                 "json",
                 "--max-turns",
@@ -104,6 +120,7 @@ class CompilerTests(unittest.TestCase):
 
         completed = run(
             str(RUN_COMPILER),
+            str(self.policy),
             str(self.prompt),
             str(self.result),
             cwd=PROJECT_ROOT,
@@ -194,6 +211,70 @@ class PatchArtifactTests(unittest.TestCase):
         self.assertEqual(self.patch.read_bytes(), b"")
 
 
+class SyncWikiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_dir.name)
+        self.source = self.root / "source"
+        self.target = self.root / "target"
+        (self.source / "docs/wiki/topics").mkdir(parents=True)
+        (self.target / "docs/wiki/topics").mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def sync(self) -> subprocess.CompletedProcess:
+        return run(
+            "python3",
+            str(SYNC_WIKI),
+            "--source",
+            str(self.source),
+            "--target",
+            str(self.target),
+            cwd=PROJECT_ROOT,
+        )
+
+    def test_replaces_only_wiki_tree_with_regular_markdown_files(self) -> None:
+        (self.source / "docs/wiki/index.md").write_text("# New\n", encoding="utf-8")
+        (self.source / "docs/wiki/topics/search.md").write_text(
+            "# Search\n", encoding="utf-8"
+        )
+        (self.target / "docs/wiki/topics/stale.md").write_text(
+            "# Stale\n", encoding="utf-8"
+        )
+
+        completed = self.sync()
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            (self.target / "docs/wiki/index.md").read_text(encoding="utf-8"),
+            "# New\n",
+        )
+        self.assertFalse((self.target / "docs/wiki/topics/stale.md").exists())
+
+    def test_rejects_symlink_before_changing_target(self) -> None:
+        outside = self.root / "outside.md"
+        outside.write_text("outside\n", encoding="utf-8")
+        (self.source / "docs/wiki/index.md").symlink_to(outside)
+        sentinel = self.target / "docs/wiki/index.md"
+        sentinel.write_text("# Trusted\n", encoding="utf-8")
+
+        completed = self.sync()
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "# Trusted\n")
+
+    def test_rejects_non_markdown_file_before_changing_target(self) -> None:
+        (self.source / "docs/wiki/payload.sh").write_text("exit 0\n", encoding="utf-8")
+        sentinel = self.target / "docs/wiki/index.md"
+        sentinel.write_text("# Trusted\n", encoding="utf-8")
+
+        completed = self.sync()
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "# Trusted\n")
+
+
 class PublisherTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -215,7 +296,7 @@ class PublisherTests(unittest.TestCase):
         )
         self.write_seed(
             "docs/wiki/log.md",
-            f"# Wiki log\n\n- Source: `github:{self.old_sha}`\n",
+            f"# Wiki log\n\n## old — `github:{self.old_sha}`\n\n- Topics: search\n- Drift: None observed\n",
         )
         self.write_seed(
             "docs/wiki/topics/search.md",
@@ -225,6 +306,8 @@ class PublisherTests(unittest.TestCase):
         git(self.seed, "add", ".")
         git(self.seed, "commit", "-m", "baseline")
         self.base = git(self.seed, "rev-parse", "HEAD")
+        self.head_sha = self.base
+        self.source_key = f"github:{self.head_sha}"
         git(self.seed, "remote", "add", "origin", str(self.remote))
         git(self.seed, "push", "-u", "origin", "main")
         run(
@@ -286,7 +369,7 @@ class PublisherTests(unittest.TestCase):
             log_path = self.seed / "docs/wiki/log.md"
             log_path.write_text(
                 log_path.read_text(encoding="utf-8")
-                + f"\n- Source: `{self.source_key}`\n  - Topics: search\n",
+                + f"\n## now — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
                 encoding="utf-8",
             )
         completed = run(
@@ -312,6 +395,7 @@ class PublisherTests(unittest.TestCase):
                 "GH_BIN": str(self.fake_gh),
                 "FAKE_GH_STATE": str(self.fake_state),
                 "WIKI_VALIDATOR": str(VALIDATOR),
+                "WIKI_CONTEXT_PREPARER": str(CONTEXT_PREPARER),
                 "PYTHON_BIN": "python3",
             }
         )
@@ -336,20 +420,22 @@ class PublisherTests(unittest.TestCase):
         completed = self.publish(clone)
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
-        remote_branch = git(
-            self.root,
-            "--git-dir",
-            str(self.remote),
-            "rev-parse",
-            "refs/heads/wiki/pending",
+        remote_branch_result = run(
+            "git", "--git-dir", str(self.remote), "rev-parse", "refs/heads/wiki/pending", cwd=self.root
         )
+        self.assertEqual(
+            remote_branch_result.returncode,
+            0,
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}\n{remote_branch_result.stderr}",
+        )
+        remote_branch = remote_branch_result.stdout.strip()
         self.assertRegex(remote_branch, r"^[0-9a-f]{40}$")
         state = json.loads(self.fake_state.read_text(encoding="utf-8"))
         self.assertEqual(state["calls"], ["create"])
         self.assertIn("<!-- llm-wiki:managed-pr -->", state["prs"][0]["body"])
         self.assertIn(self.source_key, state["prs"][0]["body"])
 
-    def test_empty_artifact_does_not_create_branch_or_pull_request(self) -> None:
+    def test_empty_artifact_persists_cursor_without_pull_request(self) -> None:
         self.build_artifact(changed=False)
         clone = self.clone_publisher()
 
@@ -365,7 +451,21 @@ class PublisherTests(unittest.TestCase):
             "refs/heads/wiki/pending",
             cwd=self.root,
         )
-        self.assertNotEqual(branch.returncode, 0)
+        self.assertEqual(
+            branch.returncode,
+            0,
+            f"publisher stdout:\n{completed.stdout}\npublisher stderr:\n{completed.stderr}\n{branch.stderr}",
+        )
+        message = git(
+            self.root,
+            "--git-dir",
+            str(self.remote),
+            "log",
+            "-1",
+            "--format=%B",
+            "refs/heads/wiki/pending",
+        )
+        self.assertIn(f"LLM-Wiki-Source: {self.source_key}", message)
         state = json.loads(self.fake_state.read_text(encoding="utf-8"))
         self.assertEqual(state["calls"], [])
 
@@ -383,11 +483,14 @@ class PublisherTests(unittest.TestCase):
 
         completed = self.publish(clone)
 
-        self.assertNotEqual(completed.returncode, 0)
+        self.assertNotEqual(
+            completed.returncode,
+            0,
+            f"publisher stdout:\n{completed.stdout}\npublisher stderr:\n{completed.stderr}\npatch:\n{self.patch.read_text(encoding='utf-8')}",
+        )
         self.assertIn("not managed", completed.stderr)
 
-    def test_updates_existing_managed_pull_request_with_cumulative_patch(self) -> None:
-        first_source_key = self.source_key
+    def test_updates_existing_managed_pull_request_with_incremental_patch(self) -> None:
         self.write_seed(
             "docs/wiki/index.md",
             "# Wiki\n\n- [Search](topics/search.md)\n- [Promotion](topics/promotion.md)\n",
@@ -402,7 +505,17 @@ class PublisherTests(unittest.TestCase):
         first = self.publish(first_clone)
         self.assertEqual(first.returncode, 0, first.stderr)
 
-        next_sha = "3" * 40
+        self.write_seed("src/next.py", "next_change = True\n")
+        git(self.seed, "add", "src/next.py")
+        git(self.seed, "commit", "-m", "next source change")
+        git(self.seed, "push", "origin", "main")
+        next_sha = git(self.seed, "rev-parse", "HEAD")
+        git(self.seed, "fetch", "origin", "wiki/pending")
+        git(self.seed, "checkout", "FETCH_HEAD", "--", "docs/wiki")
+        git(self.seed, "add", "docs/wiki")
+        git(self.seed, "commit", "-m", "snapshot pending Wiki seed")
+        incremental_base = git(self.seed, "rev-parse", "HEAD")
+
         self.head_sha = next_sha
         self.source_key = f"github:{next_sha}"
         self.write_seed(
@@ -410,26 +523,18 @@ class PublisherTests(unittest.TestCase):
             "# Search\n\n## Current behavior\n\nUpdated twice.\n\n## Sources\n\n"
             f"- `src/search.py` at `{next_sha}`\n",
         )
-        self.write_seed(
-            "docs/wiki/index.md",
-            "# Wiki\n\n- [Search](topics/search.md)\n- [Promotion](topics/promotion.md)\n",
-        )
-        self.write_seed(
-            "docs/wiki/topics/promotion.md",
-            "# Promotion\n\n## Sources\n\n"
-            f"- `src/promotion.py` at `{'2' * 40}`\n",
-        )
-        self.write_seed(
-            "docs/wiki/log.md",
-            f"# Wiki log\n\n- Source: `github:{self.old_sha}`\n"
-            f"\n- Source: `{first_source_key}`\n  - Topics: search\n"
-            f"\n- Source: `{self.source_key}`\n  - Topics: search\n",
+        log_path = self.seed / "docs/wiki/log.md"
+        log_path.write_text(
+            log_path.read_text(encoding="utf-8")
+            + f"\n## second — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
+            encoding="utf-8",
         )
         artifact = run(
             str(CREATE_PATCH),
-            self.base,
+            incremental_base,
             str(self.patch),
             str(self.metadata),
+            next_sha,
             cwd=self.seed,
         )
         self.assertEqual(artifact.returncode, 0, artifact.stderr)
@@ -442,6 +547,60 @@ class PublisherTests(unittest.TestCase):
         state = json.loads(self.fake_state.read_text(encoding="utf-8"))
         self.assertEqual(state["calls"], ["create", "edit"])
         self.assertIn(self.source_key, state["prs"][0]["body"])
+
+    def test_accepts_artifact_when_main_advanced(self) -> None:
+        self.build_artifact()
+        self.write_seed("src/later.py", "later = True\n")
+        git(self.seed, "add", "src/later.py")
+        git(self.seed, "commit", "-m", "later main change")
+        git(self.seed, "push", "origin", "main")
+        clone = self.clone_publisher()
+
+        completed = self.publish(clone)
+
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_malicious_artifact_is_rejected_before_checkout_is_mutated(self) -> None:
+        self.write_seed("scripts/wiki/validate_changes.py", "print('trusted')\n")
+        git(self.seed, "add", ".")
+        git(self.seed, "commit", "-m", "add trusted validator fixture")
+        git(self.seed, "push", "origin", "main")
+        self.base = git(self.seed, "rev-parse", "HEAD")
+        self.write_seed("scripts/wiki/validate_changes.py", "print('owned')\n")
+        self.write_seed(
+            "docs/wiki/log.md",
+            (self.seed / "docs/wiki/log.md").read_text(encoding="utf-8")
+            + f"\n## now — `{self.source_key}`\n\n- Topics: None\n- Drift: None observed\n",
+        )
+        raw = run(
+            "git", "diff", "--binary", self.base, cwd=self.seed
+        )
+        self.patch.parent.mkdir(parents=True, exist_ok=True)
+        self.patch.write_text(raw.stdout, encoding="utf-8")
+        patch_bytes = self.patch.read_bytes()
+        self.metadata.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "changed": True,
+                    "bytes": len(patch_bytes),
+                    "sha256": hashlib.sha256(patch_bytes).hexdigest(),
+                    "base_ref": self.base,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        git(self.seed, "reset", "--hard", self.base)
+        clone = self.clone_publisher()
+
+        completed = self.publish(clone)
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(
+            (clone / "scripts/wiki/validate_changes.py").read_text(encoding="utf-8"),
+            "print('trusted')\n",
+        )
 
 
 

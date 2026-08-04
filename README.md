@@ -40,12 +40,12 @@ main merge
 
 | job | 권한과 책임 |
 | --- | --- |
-| `ingest` | 저장소 읽기 권한과 Anthropic API key를 사용해 context를 만들고 `claude -p`를 실행한 뒤 Wiki patch를 검증합니다. GitHub에 쓸 수 없습니다. |
-| `publish-pr` | Anthropic API key 없이 검증된 patch를 새 checkout에 다시 적용하고 `wiki/pending` PR을 생성하거나 갱신합니다. |
+| `ingest` | 저장소 읽기 권한과 Anthropic API key를 사용해 context를 만들고 `claude -p`를 실행합니다. Claude 실행 후 만든 별도 pristine checkout의 엔진으로 Wiki patch를 검증합니다. GitHub에 쓸 수 없습니다. |
+| `publish-pr` | Anthropic API key 없이 patch를 임시 worktree에서 먼저 검증하고, 통과한 경우에만 `wiki/pending` branch와 PR을 생성하거나 갱신합니다. |
 
 Claude는 GitHub 쓰기 권한을 가지지 않으며, publish job은 Claude를 실행하지 않습니다. 두 job 사이에는 Wiki patch와 검증 metadata만 artifact로 전달됩니다.
 
-연속해서 `main`이 변경되면 엔진이 관리하는 `wiki/pending` branch의 Wiki를 다음 실행의 seed로 사용합니다. 따라서 미병합 지식도 잃지 않고 하나의 PR에 누적됩니다. 사용자 소유 branch나 marker가 없는 PR은 덮어쓰지 않습니다.
+연속해서 `main`이 변경되면 엔진이 관리하는 `wiki/pending` branch의 Wiki를 다음 실행의 seed로 사용합니다. 따라서 미병합 지식도 잃지 않고 하나의 PR에 누적됩니다. 문서 변경이 없는 실행도 branch의 commit trailer에 처리한 source cursor를 남기므로 같은 범위를 반복해서 읽거나 중간 merge를 놓치지 않습니다. 사용자 소유 branch나 marker가 없는 PR은 덮어쓰지 않습니다.
 
 ## LLM Wiki 구조
 
@@ -63,6 +63,7 @@ Claude는 GitHub 쓰기 권한을 가지지 않으며, publish job은 Claude를 
 │   └── wiki/
 │       ├── prepare_context.py
 │       ├── run_compiler.sh
+│       ├── sync_wiki.py
 │       ├── validate_changes.py
 │       ├── create_patch.sh
 │       └── publish_pr.sh
@@ -91,7 +92,7 @@ Claude는 GitHub 쓰기 권한을 가지지 않으며, publish job은 Claude를 
 | `scripts/wiki/` | context 생성, 검증, patch 직렬화, PR 게시를 담당하는 결정적 로직 |
 | `docs/specs/` | 사람이 작성하고 승인하는 Spec, LLD, acceptance criteria |
 | `docs/wiki/index.md` | 전체 Topic의 링크와 한 줄 요약을 담는 탐색 진입점 |
-| `docs/wiki/log.md` | ingest, query, lint와 문서 변경을 기록하는 append-only 이력 |
+| `docs/wiki/log.md` | Wiki 문서 변경의 source commit, Topic, drift를 기록하는 append-only 이력 |
 | `docs/wiki/topics/` | LLM이 생성하고 갱신하는 현재 지식 |
 
 ## Topic은 작게 시작하고 필요할 때 분리한다
@@ -161,11 +162,12 @@ GitHub 저장소에는 다음 설정이 필요합니다.
 ## 실행 안전성
 
 - GitHub event 값은 prompt나 inline shell에 직접 삽입하지 않고 환경 변수와 JSON context로 전달합니다.
-- Claude가 수정한 작업 트리는 허용 경로, symlink, append-only log, source key, Topic 링크, 근거 commit, 파일 수, patch 크기를 검사합니다.
-- publish job은 artifact checksum을 확인하고 깨끗한 최신 `main`에 patch를 적용한 뒤 같은 validator를 다시 실행합니다.
+- Claude CLI는 `--tools`로 읽기·검색·Wiki 편집 도구만 노출하고 MCP, slash command, session persistence를 끕니다.
+- Claude가 수정한 작업 트리는 Claude가 수정할 수 없는 pristine checkout의 엔진으로 허용 경로, symlink, append-only log, source key, Topic 링크, 근거 commit, 파일 수, patch 크기를 검사합니다.
+- publish job은 저장소 밖으로 복사한 trusted engine을 사용합니다. artifact checksum을 확인하고 disposable worktree에서 patch를 적용·재검증한 뒤에만 실제 managed branch를 갱신합니다.
 - 외부 GitHub Actions는 full commit SHA로 고정하고 Claude Code CLI 버전도 고정합니다.
 - 기본 한도는 source 변경 200개·입력 diff 1 MB·Wiki 변경 30개·Wiki patch 500 KB·Claude 8 turns입니다.
-- 변경할 지식이 없으면 빈 PR을 만들지 않습니다.
+- 변경할 지식이 없으면 처리 cursor만 managed branch에 기록하고 빈 PR은 만들지 않습니다.
 - Wiki만 변경된 push는 Claude를 호출하지 않아 생성된 Wiki PR의 merge가 다시 ingest되는 순환을 막습니다.
 
 기본 `GITHUB_TOKEN`으로 생성한 PR은 다른 workflow를 자동으로 trigger하지 않을 수 있습니다. 이 프로젝트는 그 동작에 안전성을 의존하지 않고 publish 직전 이중 검증을 수행합니다. 생성된 Wiki PR에서도 일반 CI를 자동 실행해야 한다면 후속 구성에서 GitHub App installation token을 사용해야 합니다.

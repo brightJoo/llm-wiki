@@ -13,7 +13,13 @@ from typing import Dict, List, Optional, Sequence
 
 
 ZERO_SHA = "0" * 40
-SOURCE_PATTERN = re.compile(r"github:([0-9a-f]{40})")
+LOG_ENTRY_PATTERN = re.compile(
+    r"(?m)^## [^\n]+ — `github:([0-9a-f]{40})`\s*\n\n"
+    r"- Topics: [^\n]+\n- Drift: [^\n]+(?:\n|$)"
+)
+MANAGED_SOURCE_PATTERN = re.compile(
+    r"(?m)^LLM-Wiki-Source: github:([0-9a-f]{40})\s*$"
+)
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 IGNORED_TOKENS = {
     "acceptance",
@@ -109,15 +115,28 @@ def _parse_name_status(raw: bytes) -> List[Dict[str, str]]:
 
 
 def changed_files(repo: Path, base: str, head: str) -> List[Dict[str, str]]:
-    raw = _run_git_bytes(repo, "diff", "--name-status", "-z", base, head)
+    raw = _run_git_bytes(
+        repo, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", base, head
+    )
     return _parse_name_status(raw)
 
 
 def last_source_commit(log_path: Path) -> Optional[str]:
     if not log_path.is_file():
         return None
-    matches = SOURCE_PATTERN.findall(log_path.read_text(encoding="utf-8"))
+    matches = LOG_ENTRY_PATTERN.findall(log_path.read_text(encoding="utf-8"))
     return matches[-1] if matches else None
+
+
+def managed_source_commit(repo: Path, ref: str) -> Optional[str]:
+    """Read the durable source cursor from a managed commit message."""
+    message = run_git(repo, "log", "-1", "--format=%B", ref)
+    if "LLM-Wiki-Managed: true" not in message:
+        return None
+    matches = MANAGED_SOURCE_PATTERN.findall(message)
+    if len(matches) > 1:
+        raise ContextError(f"managed ref {ref} has multiple source cursors")
+    return matches[0] if matches else None
 
 
 def seed_pending_wiki(
@@ -158,7 +177,16 @@ def seed_pending_wiki(
         main_wiki_paths.update(path for path in paths if _is_wiki_path(path))
     overlap = sorted(main_wiki_paths & pending_wiki_paths)
     if overlap:
-        same_wiki_tree = subprocess.run(
+        pending_cursor = managed_source_commit(repo, pending_sha)
+        main_log_path = repo / "docs/wiki/log.md"
+        main_log_sources = (
+            LOG_ENTRY_PATTERN.findall(main_log_path.read_text(encoding="utf-8"))
+            if main_log_path.is_file()
+            else []
+        )
+        if pending_cursor and pending_cursor in main_log_sources:
+            return main_log_sources[-1]
+        same_pending_paths = subprocess.run(
             [
                 "git",
                 "-C",
@@ -168,13 +196,15 @@ def seed_pending_wiki(
                 main_sha,
                 pending_sha,
                 "--",
-                "docs/wiki",
+                *sorted(pending_wiki_paths),
             ],
             check=False,
             capture_output=True,
         )
-        if same_wiki_tree.returncode == 0:
-            cursor = last_source_commit(repo / "docs/wiki/log.md")
+        if same_pending_paths.returncode == 0:
+            cursor = managed_source_commit(repo, pending_sha) or last_source_commit(
+                repo / "docs/wiki/log.md"
+            )
             if cursor:
                 ancestor = subprocess.run(
                     [
@@ -202,6 +232,8 @@ def seed_pending_wiki(
         patch = _run_git_bytes(
             repo,
             "diff",
+            "--no-ext-diff",
+            "--no-textconv",
             "--binary",
             merge_base,
             pending_sha,
@@ -218,7 +250,9 @@ def seed_pending_wiki(
             detail = applied.stderr.decode("utf-8", "replace").strip()
             raise ContextError(f"pending Wiki patch did not apply: {detail}")
 
-    cursor = last_source_commit(repo / "docs/wiki/log.md")
+    cursor = managed_source_commit(repo, pending_sha) or last_source_commit(
+        repo / "docs/wiki/log.md"
+    )
     if cursor:
         ancestor = subprocess.run(
             ["git", "-C", str(repo), "merge-base", "--is-ancestor", cursor, main_sha],
@@ -319,6 +353,8 @@ def prepare_context(
         diff = _run_git_bytes(
             repo,
             "diff",
+            "--no-ext-diff",
+            "--no-textconv",
             "--binary",
             base_sha,
             head_sha,
@@ -369,6 +405,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             pending_cursor = seed_pending_wiki(args.repo, args.head, args.pending_ref)
             if pending_cursor:
                 base = pending_cursor
+        else:
+            main_cursor = last_source_commit(args.repo / "docs/wiki/log.md")
+            if main_cursor:
+                cursor_exists = subprocess.run(
+                    ["git", "-C", str(args.repo), "cat-file", "-e", f"{main_cursor}^{{commit}}"],
+                    check=False,
+                    capture_output=True,
+                )
+                cursor_is_ancestor = subprocess.run(
+                    ["git", "-C", str(args.repo), "merge-base", "--is-ancestor", main_cursor, args.head],
+                    check=False,
+                    capture_output=True,
+                )
+                if cursor_exists.returncode == 0 and cursor_is_ancestor.returncode == 0:
+                    base = main_cursor
         context = prepare_context(
             args.repo,
             base,

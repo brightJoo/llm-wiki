@@ -16,6 +16,14 @@ from urllib.parse import unquote
 
 SOURCE_KEY_PATTERN = re.compile(r"^github:([0-9a-f]{40})$")
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+REFERENCE_DEFINITION_PATTERN = re.compile(r"(?m)^\[([^\]]+)\]:\s*(\S.*)$")
+REFERENCE_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
+LOG_ENTRY_PATTERN = re.compile(
+    r"(?m)^## [^\n]+ — `(github:[0-9a-f]{40})`\s*\n\n"
+    r"- Topics: [^\n]+\n- Drift: [^\n]+(?:\n|$)"
+)
+ANY_SOURCE_PATTERN = re.compile(r"github:[0-9a-f]{40}")
+INLINE_CODE_PATTERN = re.compile(r"`([^`]+)`")
 
 
 @dataclass(frozen=True)
@@ -68,7 +76,16 @@ def _parse_name_status(raw: bytes) -> List[Dict[str, str]]:
 
 def _changes(repo: Path, base_ref: str) -> List[Dict[str, str]]:
     tracked = _parse_name_status(
-        _git(repo, "diff", "--name-status", "-z", base_ref, text=False)
+        _git(
+            repo,
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--name-status",
+            "-z",
+            base_ref,
+            text=False,
+        )
     )
     known_paths = {item["path"] for item in tracked}
     untracked_raw = _git(
@@ -103,7 +120,15 @@ def _base_bytes(repo: Path, base_ref: str, path: str) -> bytes:
 
 
 def _patch_size(repo: Path, base_ref: str, changes: Iterable[Dict[str, str]]) -> int:
-    tracked_diff = _git(repo, "diff", "--binary", base_ref, text=False)
+    tracked_diff = _git(
+        repo,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--binary",
+        base_ref,
+        text=False,
+    )
     size = len(tracked_diff)
     for change in changes:
         if change["status"] == "A":
@@ -142,7 +167,24 @@ def _wiki_graph(repo: Path) -> Tuple[Dict[Path, set[Path]], List[ValidationIssue
         resolved_document = document.resolve()
         graph.setdefault(resolved_document, set())
         content = document.read_text(encoding="utf-8")
-        for raw_target in MARKDOWN_LINK_PATTERN.findall(content):
+        definitions = {
+            label.casefold(): target
+            for label, target in REFERENCE_DEFINITION_PATTERN.findall(content)
+        }
+        raw_targets = list(MARKDOWN_LINK_PATTERN.findall(content))
+        for label, reference in REFERENCE_LINK_PATTERN.findall(content):
+            key = (reference or label).casefold()
+            if key in definitions:
+                raw_targets.append(definitions[key])
+            else:
+                issues.append(
+                    ValidationIssue(
+                        "broken_link",
+                        document.relative_to(repo).as_posix(),
+                        f"reference link has no definition: {key}",
+                    )
+                )
+        for raw_target in raw_targets:
             target = _link_target(raw_target)
             if target is None:
                 continue
@@ -272,13 +314,22 @@ def validate(
         appended_log = current_log
     else:
         appended_log = current_log[len(base_log) :]
-    occurrences = appended_log.count(source_key.encode("utf-8"))
-    if occurrences != 1:
+    try:
+        appended_text = appended_log.decode("utf-8")
+    except UnicodeDecodeError:
+        appended_text = ""
+    heading_sources = LOG_ENTRY_PATTERN.findall(appended_text)
+    all_tokens = ANY_SOURCE_PATTERN.findall(appended_text)
+    valid_entry = (
+        heading_sources == [source_key]
+        and all_tokens == [source_key]
+    )
+    if not valid_entry:
         issues.append(
             ValidationIssue(
-                "source_key_count",
+                "invalid_log_entry",
                 "docs/wiki/log.md",
-                f"new log content must contain source key exactly once; found {occurrences}",
+                "new log content must contain one structured entry for the source key",
             )
         )
 
@@ -308,18 +359,37 @@ def validate(
         if not topic_path.is_file():
             continue
         content = topic_path.read_text(encoding="utf-8")
-        if not re.search(r"(?m)^## Sources\s*$", content):
+        sources_match = re.search(
+            r"(?ms)^## Sources\s*$\n(.*?)(?=^##\s|\Z)", content
+        )
+        if sources_match is None:
             issues.append(
                 ValidationIssue(
                     "missing_sources", path, "changed Topic must contain a Sources section"
                 )
             )
-        if head_sha not in content:
+            sources = ""
+        else:
+            sources = sources_match.group(1)
+        if head_sha not in sources:
             issues.append(
                 ValidationIssue(
                     "missing_source_commit",
                     path,
                     "changed Topic must cite the source commit",
+                )
+            )
+        evidence_paths = [
+            value
+            for value in INLINE_CODE_PATTERN.findall(sources)
+            if value != head_sha and ("/" in value or "." in Path(value).name)
+        ]
+        if not evidence_paths:
+            issues.append(
+                ValidationIssue(
+                    "missing_source_path",
+                    path,
+                    "changed Topic must cite at least one repository path",
                 )
             )
     return issues

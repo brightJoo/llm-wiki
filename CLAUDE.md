@@ -87,4 +87,3 @@ Use this log shape:
 ## No-change rule
 
 If the merged change contains no durable knowledge, make no Wiki edits. A successful ingest may intentionally produce an empty patch.
-

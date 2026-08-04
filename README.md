@@ -1,6 +1,6 @@
 # LLM Wiki
 
-운영 중인 코드베이스의 지식을 GitHub의 변경 이력에서 점진적으로 축적하는 LLM 기반 Wiki입니다.
+운영 중인 코드베이스의 지식을 GitHub의 변경 이력에서 점진적으로 축적하는 repository-local LLM Wiki toolkit입니다.
 
 이 프로젝트는 기존 서비스를 처음부터 다시 문서화하지 않습니다. 오늘 이후 `main`에 병합되는 코드 변경부터 현재 코드베이스와 대조하여 Markdown Wiki로 컴파일합니다.
 
@@ -36,11 +36,36 @@ main merge
   -> Wiki 변경 PR 생성
 ```
 
+`wiki-ingest.yml`은 이 흐름을 두 job으로 나눕니다.
+
+| job | 권한과 책임 |
+| --- | --- |
+| `ingest` | 저장소 읽기 권한과 Anthropic API key를 사용해 context를 만들고 `claude -p`를 실행한 뒤 Wiki patch를 검증합니다. GitHub에 쓸 수 없습니다. |
+| `publish-pr` | Anthropic API key 없이 검증된 patch를 새 checkout에 다시 적용하고 `wiki/pending` PR을 생성하거나 갱신합니다. |
+
+Claude는 GitHub 쓰기 권한을 가지지 않으며, publish job은 Claude를 실행하지 않습니다. 두 job 사이에는 Wiki patch와 검증 metadata만 artifact로 전달됩니다.
+
+연속해서 `main`이 변경되면 엔진이 관리하는 `wiki/pending` branch의 Wiki를 다음 실행의 seed로 사용합니다. 따라서 미병합 지식도 잃지 않고 하나의 PR에 누적됩니다. 사용자 소유 branch나 marker가 없는 PR은 덮어쓰지 않습니다.
+
 ## LLM Wiki 구조
 
 ```text
 .
 ├── CLAUDE.md
+├── .github/
+│   └── workflows/
+│       ├── wiki-ingest.yml
+│       └── ci.yml
+├── .llm-wiki/
+│   └── prompts/
+│       └── ingest.md
+├── scripts/
+│   └── wiki/
+│       ├── prepare_context.py
+│       ├── run_compiler.sh
+│       ├── validate_changes.py
+│       ├── create_patch.sh
+│       └── publish_pr.sh
 └── docs/
     ├── specs/
     │   └── <feature>/
@@ -60,7 +85,10 @@ main merge
 
 | 위치 | 책임 |
 | --- | --- |
-| `CLAUDE.md` | LLM이 따라야 하는 ingest, query, lint, 문서 작성 규칙 |
+| `CLAUDE.md` | 모든 ingest에서 유지되는 소유권, Topic, 근거, drift 작성 규칙 |
+| `.llm-wiki/prompts/ingest.md` | 한 번의 `main` 변경을 처리하는 순서와 런타임 입력 위치 |
+| `.github/workflows/wiki-ingest.yml` | trigger, job 권한, concurrency, artifact 전달을 담당하는 orchestration |
+| `scripts/wiki/` | context 생성, 검증, patch 직렬화, PR 게시를 담당하는 결정적 로직 |
 | `docs/specs/` | 사람이 작성하고 승인하는 Spec, LLD, acceptance criteria |
 | `docs/wiki/index.md` | 전체 Topic의 링크와 한 줄 요약을 담는 탐색 진입점 |
 | `docs/wiki/log.md` | ingest, query, lint와 문서 변경을 기록하는 append-only 이력 |
@@ -104,11 +132,62 @@ LLM은 불일치를 임의로 해결하지 않습니다.
 - 승인된 Spec과 코드가 다르면 어떤 쪽이 맞는지 단정하지 않고 drift로 보고합니다.
 - LLM은 사람 소유의 Spec·LLD를 현재 코드에 맞춰 자동으로 덮어쓰지 않습니다.
 
+`docs/specs/`가 없는 저장소에서도 동작합니다. 이 경우 코드와 테스트를 근거로 Wiki를 갱신하고 Spec drift 검사는 건너뜁니다.
+
+## 설치
+
+v1은 원격 reusable Action이 아니라 대상 저장소 안에 함께 두는 toolkit입니다. 다음 경로를 대상 저장소에 복사합니다.
+
+```text
+CLAUDE.md
+.github/workflows/wiki-ingest.yml
+.github/workflows/ci.yml
+.llm-wiki/prompts/ingest.md
+scripts/wiki/
+```
+
+대상 저장소에 `CLAUDE.md`가 이미 있으면 파일 전체를 덮어쓰지 말고 이 프로젝트의 LLM Wiki compiler policy를 기존 지침에 병합합니다.
+
+GitHub 저장소에는 다음 설정이 필요합니다.
+
+1. Actions secret `ANTHROPIC_API_KEY`를 등록합니다.
+2. Actions variable `LLM_WIKI_ENABLED`를 `true`로 등록합니다. 이 변수가 없거나 다른 값이면 ingest job은 실행되지 않습니다.
+3. Workflow가 `contents: write`와 `pull-requests: write`를 사용할 수 있게 합니다.
+4. **Settings → Actions → General**에서 GitHub Actions의 Pull Request 생성을 허용합니다.
+5. `main` direct push를 막고 PR merge만 허용하는 branch protection을 권장합니다.
+
+설치 이전의 Git 이력을 자동으로 역주행하지 않습니다. 활성화 이후 첫 번째 `main` push의 `before..after` 범위부터 쌓기 시작합니다. branch 생성처럼 `before`가 zero SHA인 event는 과거 전체를 읽지 않고 bootstrap 안내와 함께 종료합니다.
+
+## 실행 안전성
+
+- GitHub event 값은 prompt나 inline shell에 직접 삽입하지 않고 환경 변수와 JSON context로 전달합니다.
+- Claude가 수정한 작업 트리는 허용 경로, symlink, append-only log, source key, Topic 링크, 근거 commit, 파일 수, patch 크기를 검사합니다.
+- publish job은 artifact checksum을 확인하고 깨끗한 최신 `main`에 patch를 적용한 뒤 같은 validator를 다시 실행합니다.
+- 외부 GitHub Actions는 full commit SHA로 고정하고 Claude Code CLI 버전도 고정합니다.
+- 기본 한도는 source 변경 200개·입력 diff 1 MB·Wiki 변경 30개·Wiki patch 500 KB·Claude 8 turns입니다.
+- 변경할 지식이 없으면 빈 PR을 만들지 않습니다.
+- Wiki만 변경된 push는 Claude를 호출하지 않아 생성된 Wiki PR의 merge가 다시 ingest되는 순환을 막습니다.
+
+기본 `GITHUB_TOKEN`으로 생성한 PR은 다른 workflow를 자동으로 trigger하지 않을 수 있습니다. 이 프로젝트는 그 동작에 안전성을 의존하지 않고 publish 직전 이중 검증을 수행합니다. 생성된 Wiki PR에서도 일반 CI를 자동 실행해야 한다면 후속 구성에서 GitHub App installation token을 사용해야 합니다.
+
+## 로컬 검증
+
+실제 Anthropic API나 GitHub 저장소를 호출하지 않고 임시 Git 저장소와 fake Claude/GitHub CLI로 pipeline을 검증할 수 있습니다.
+
+```bash
+python3 -m unittest discover -s tests -v
+python3 -m compileall -q scripts tests
+shellcheck scripts/wiki/*.sh
+actionlint
+git diff --check
+```
+
 ## 프로젝트가 지향하지 않는 것
 
 - 기존 3년치 코드베이스를 한 번에 완전하게 문서화하는 것
 - 코드 검증 없이 LLM의 추론을 사실로 저장하는 것
 - Spec과 LLD를 LLM이 임의로 현재 코드에 맞추는 것
 - 처음부터 복잡한 검색 인프라나 벡터 데이터베이스를 도입하는 것
+- 예제 서비스 코드베이스나 완성된 Wiki 내용을 이 저장소에 포함하는 것
 
 Wiki는 실제로 사용되는 지식부터 성장합니다. 구조와 규칙도 지식이 쌓이면서 필요한 만큼 함께 진화합니다.

@@ -87,6 +87,25 @@ jobs:
         with:
           node-version: "22"
 
+      - name: Snapshot the pending Wiki seed
+        if: steps.context.outputs.ready == 'true'
+        id: seed
+        shell: bash
+        env:
+          EVENT_HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n $(git status --porcelain -- docs/wiki) ]]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add -A -- docs/wiki
+            git commit -m "chore: snapshot pending Wiki for validation"
+            seed_ref=$(git rev-parse HEAD)
+          else
+            seed_ref=$EVENT_HEAD_SHA
+          fi
+          echo "ref=$seed_ref" >> "$GITHUB_OUTPUT"
+
       - name: Install pinned Claude Code CLI
         if: steps.context.outputs.ready == 'true'
         run: npm install --global @anthropic-ai/claude-code@2.1.221
@@ -104,25 +123,37 @@ jobs:
 
       - name: Validate generated Wiki changes
         if: steps.context.outputs.ready == 'true'
+        id: validation
         shell: bash
+        env:
+          SEED_REF: ${{ steps.seed.outputs.ref }}
         run: |
           set -euo pipefail
           source_key=$(python3 -c 'import json; print(json.load(open(".llm-wiki/runtime/context.json"))["source_key"])')
           python3 scripts/wiki/validate_changes.py \
             --repo . \
-            --base-ref HEAD \
+            --base-ref "$SEED_REF" \
             --source-key "$source_key" \
             --max-files 30 \
             --max-patch-bytes 500000 \
             --report .llm-wiki/runtime/validation.json
+          changed=$(python3 -c 'import json; print(str(json.load(open(".llm-wiki/runtime/validation.json"))["changed"]).lower())')
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: Create cumulative Wiki patch artifact
         if: steps.context.outputs.ready == 'true'
         env:
           EVENT_HEAD_SHA: ${{ github.sha }}
+          SEED_REF: ${{ steps.seed.outputs.ref }}
+          WIKI_CHANGED: ${{ steps.validation.outputs.changed }}
         run: |
+          if [[ "$WIKI_CHANGED" == "true" ]]; then
+            patch_base=$EVENT_HEAD_SHA
+          else
+            patch_base=$SEED_REF
+          fi
           scripts/wiki/create_patch.sh \
-            "$EVENT_HEAD_SHA" \
+            "$patch_base" \
             .llm-wiki/runtime/wiki.patch \
             .llm-wiki/runtime/patch-metadata.json
 

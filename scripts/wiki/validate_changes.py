@@ -193,6 +193,7 @@ def validate(
     source_key: str,
     max_files: int,
     max_patch_bytes: int,
+    incremental_base_ref: Optional[str] = None,
 ) -> List[ValidationIssue]:
     repo = repo.resolve()
     issues: List[ValidationIssue] = []
@@ -207,6 +208,8 @@ def validate(
     changes = _changes(repo, base_ref)
     if not changes:
         return issues
+    incremental_ref = incremental_base_ref or base_ref
+    incremental_changes = _changes(repo, incremental_ref)
 
     if len(changes) > max_files:
         issues.append(
@@ -247,7 +250,7 @@ def validate(
                 )
             )
 
-    base_log = _base_bytes(repo, base_ref, "docs/wiki/log.md")
+    base_log = _base_bytes(repo, incremental_ref, "docs/wiki/log.md")
     log_path = repo / "docs/wiki/log.md"
     current_log = log_path.read_bytes() if log_path.is_file() else b""
     if source_key.encode("utf-8") in base_log:
@@ -297,7 +300,7 @@ def validate(
             )
         )
 
-    for change in changes:
+    for change in incremental_changes:
         path = change["path"]
         if not path.startswith("docs/wiki/topics/") or change["status"].startswith("D"):
             continue
@@ -327,6 +330,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", type=Path, default=Path("."))
     parser.add_argument("--base-ref", default="HEAD")
     parser.add_argument("--source-key", required=True)
+    parser.add_argument("--incremental-base-ref")
     parser.add_argument("--max-files", type=int, default=30)
     parser.add_argument("--max-patch-bytes", type=int, default=500_000)
     parser.add_argument("--report", type=Path)
@@ -343,6 +347,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.source_key,
             args.max_files,
             args.max_patch_bytes,
+            args.incremental_base_ref,
         )
     except (OSError, RuntimeError, UnicodeError) as error:
         print(f"validate-changes: {error}", file=sys.stderr)

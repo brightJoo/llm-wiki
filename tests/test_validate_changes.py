@@ -207,6 +207,50 @@ class ValidateChangesTests(unittest.TestCase):
 
         self.assertIn("symlink_not_allowed", self.issue_codes())
 
+    def test_incremental_base_checks_evidence_only_for_newly_touched_topics(self) -> None:
+        baseline = git(self.repo, "rev-parse", "HEAD")
+        pending_sha = "2" * 40
+        self.write(
+            "docs/wiki/index.md",
+            "# Wiki\n\n- [Search](topics/search.md)\n- [Promotion](topics/promotion.md)\n",
+        )
+        self.write(
+            "docs/wiki/topics/promotion.md",
+            "# Promotion\n\n## Sources\n\n"
+            f"- `src/promotion.py` at `{pending_sha}`\n",
+        )
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\n- Source: `github:{pending_sha}`\n",
+            encoding="utf-8",
+        )
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "pending wiki")
+        pending_ref = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "reset", "--hard", baseline)
+        git(self.repo, "checkout", pending_ref, "--", "docs/wiki")
+        self.head_sha = "3" * 40
+        self.source_key = f"github:{self.head_sha}"
+        self.update_search()
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\n- Source: `{self.source_key}`\n  - Topics: search\n",
+            encoding="utf-8",
+        )
+
+        issues = validate(
+            self.repo,
+            "HEAD",
+            self.source_key,
+            max_files=20,
+            max_patch_bytes=100_000,
+            incremental_base_ref=pending_ref,
+        )
+
+        self.assertEqual(issues, [])
+
 
 if __name__ == "__main__":
     unittest.main()

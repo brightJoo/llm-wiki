@@ -388,6 +388,15 @@ class PublisherTests(unittest.TestCase):
 
     def test_updates_existing_managed_pull_request_with_cumulative_patch(self) -> None:
         first_source_key = self.source_key
+        self.write_seed(
+            "docs/wiki/index.md",
+            "# Wiki\n\n- [Search](topics/search.md)\n- [Promotion](topics/promotion.md)\n",
+        )
+        self.write_seed(
+            "docs/wiki/topics/promotion.md",
+            "# Promotion\n\n## Sources\n\n"
+            f"- `src/promotion.py` at `{self.head_sha}`\n",
+        )
         self.build_artifact()
         first_clone = self.clone_publisher("first-publisher")
         first = self.publish(first_clone)
@@ -400,6 +409,15 @@ class PublisherTests(unittest.TestCase):
             "docs/wiki/topics/search.md",
             "# Search\n\n## Current behavior\n\nUpdated twice.\n\n## Sources\n\n"
             f"- `src/search.py` at `{next_sha}`\n",
+        )
+        self.write_seed(
+            "docs/wiki/index.md",
+            "# Wiki\n\n- [Search](topics/search.md)\n- [Promotion](topics/promotion.md)\n",
+        )
+        self.write_seed(
+            "docs/wiki/topics/promotion.md",
+            "# Promotion\n\n## Sources\n\n"
+            f"- `src/promotion.py` at `{'2' * 40}`\n",
         )
         self.write_seed(
             "docs/wiki/log.md",

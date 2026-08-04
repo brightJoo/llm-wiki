@@ -140,6 +140,11 @@ elif [[ "$pr_count" == "1" ]]; then
   exit 1
 fi
 
+incremental_base_ref="refs/remotes/origin/${base_branch}"
+if [[ -n "$remote_oid" ]]; then
+  incremental_base_ref="refs/remotes/origin/${wiki_branch}"
+fi
+
 git switch --force-create "$wiki_branch" "refs/remotes/origin/${base_branch}"
 if ! git apply --check "$patch_path"; then
   echo "publish-pr: patch does not apply cleanly to latest main" >&2
@@ -150,6 +155,7 @@ git apply "$patch_path"
 if ! "$python_bin" "$validator" \
   --repo . \
   --base-ref "refs/remotes/origin/${base_branch}" \
+  --incremental-base-ref "$incremental_base_ref" \
   --source-key "$source_key" \
   --report "$report_file" >/dev/null; then
   echo "publish-pr: patch failed deterministic validation" >&2

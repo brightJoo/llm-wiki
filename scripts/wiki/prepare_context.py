@@ -158,6 +158,42 @@ def seed_pending_wiki(
         main_wiki_paths.update(path for path in paths if _is_wiki_path(path))
     overlap = sorted(main_wiki_paths & pending_wiki_paths)
     if overlap:
+        same_wiki_tree = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "diff",
+                "--quiet",
+                main_sha,
+                pending_sha,
+                "--",
+                "docs/wiki",
+            ],
+            check=False,
+            capture_output=True,
+        )
+        if same_wiki_tree.returncode == 0:
+            cursor = last_source_commit(repo / "docs/wiki/log.md")
+            if cursor:
+                ancestor = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo),
+                        "merge-base",
+                        "--is-ancestor",
+                        cursor,
+                        main_sha,
+                    ],
+                    check=False,
+                    capture_output=True,
+                )
+                if ancestor.returncode != 0:
+                    raise ContextError(
+                        f"pending source commit {cursor} is not an ancestor of {main_sha}"
+                    )
+            return cursor
         raise ContextError(
             "main and pending Wiki changes overlap: " + ", ".join(overlap)
         )

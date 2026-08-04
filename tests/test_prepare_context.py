@@ -210,6 +210,26 @@ class PrepareContextTests(unittest.TestCase):
         with self.assertRaisesRegex(ContextError, "overlap"):
             seed_pending_wiki(self.repo, "HEAD", "wiki-pending")
 
+    def test_ignores_stale_pending_branch_already_squash_merged(self) -> None:
+        source_commit = self.commit_files({"src/a.py": "a\n"}, "source change")
+        git(self.repo, "switch", "-c", "wiki-pending")
+        self.commit_files(
+            {
+                "docs/wiki/index.md": "# Wiki\n",
+                "docs/wiki/log.md": f"# Log\n\n- Source: `github:{source_commit}`\n",
+            },
+            "docs(wiki): compile\n\nLLM-Wiki-Managed: true",
+        )
+        pending_tip = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "switch", "main")
+        git(self.repo, "checkout", pending_tip, "--", "docs/wiki")
+        git(self.repo, "commit", "-m", "squash Wiki PR")
+
+        cursor = seed_pending_wiki(self.repo, "HEAD", "wiki-pending")
+
+        self.assertEqual(cursor, source_commit)
+        self.assertEqual(git(self.repo, "status", "--porcelain"), "")
+
 
 if __name__ == "__main__":
     unittest.main()

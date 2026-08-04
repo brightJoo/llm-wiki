@@ -1,0 +1,268 @@
+name: LLM Wiki ingest
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Commit SHA to compare with the current main head
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: llm-wiki-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    name: Compile and validate Wiki patch
+    if: vars.LLM_WIKI_ENABLED == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.context.outputs.publish }}
+    steps:
+      - name: Check out main history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Fetch managed pending Wiki branch when present
+        id: pending
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin refs/heads/wiki/pending >/dev/null 2>&1; then
+            git fetch --no-tags origin +refs/heads/wiki/pending:refs/remotes/origin/wiki/pending
+            echo "ref=refs/remotes/origin/wiki/pending" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Prepare bounded ingest context
+        id: context
+        shell: bash
+        env:
+          EVENT_BASE_SHA: ${{ github.event_name == 'workflow_dispatch' && inputs.base_sha || github.event.before }}
+          EVENT_HEAD_SHA: ${{ github.sha }}
+          PENDING_REF: ${{ steps.pending.outputs.ref }}
+        run: |
+          set -euo pipefail
+          pending_args=()
+          if [[ -n "$PENDING_REF" ]]; then
+            pending_args+=(--pending-ref "$PENDING_REF")
+          fi
+          python3 scripts/wiki/prepare_context.py \
+            --repo . \
+            --base "$EVENT_BASE_SHA" \
+            --head "$EVENT_HEAD_SHA" \
+            --output-dir .llm-wiki/runtime \
+            --max-files 200 \
+            --max-diff-bytes 1000000 \
+            "${pending_args[@]}" >/dev/null
+          status=$(python3 -c 'import json; print(json.load(open(".llm-wiki/runtime/context.json"))["status"])')
+          if [[ "$status" == "ready" ]]; then
+            echo "compile=true" >> "$GITHUB_OUTPUT"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "compile=false" >> "$GITHUB_OUTPUT"
+            reason=$(python3 -c 'import json; print(json.load(open(".llm-wiki/runtime/context.json")).get("reason", "not_ready"))')
+            if [[ "$reason" == "no_changes" || "$reason" == "docs_wiki_only" ]]; then
+              echo "publish=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "publish=false" >> "$GITHUB_OUTPUT"
+            fi
+            echo "### LLM Wiki ingest skipped: $reason" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Set up Node.js
+        if: steps.context.outputs.compile == 'true'
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned Claude Code CLI
+        if: steps.context.outputs.compile == 'true'
+        run: npm install --global @anthropic-ai/claude-code@2.1.221
+
+      - name: Compile Wiki working tree
+        if: steps.context.outputs.compile == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CLAUDE_MAX_TURNS: "8"
+          CLAUDE_ALLOWED_TOOLS: Read,Grep,Glob,Edit,Write
+          CLAUDE_TOOLS: Read,Grep,Glob,Edit,Write
+        run: |
+          scripts/wiki/run_compiler.sh \
+            CLAUDE.md \
+            .llm-wiki/prompts/ingest.md \
+            .llm-wiki/runtime/claude-result.json
+
+      - name: Remove any compiler-created validation checkout path
+        if: steps.context.outputs.publish == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          path=.llm-wiki-validation
+          if [[ -L "$path" || -f "$path" ]]; then
+            unlink "$path"
+          elif [[ -d "$path" ]]; then
+            rm -r -- "$path"
+          fi
+
+      - name: Check out a pristine validation repository
+        if: steps.context.outputs.publish == 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          path: .llm-wiki-validation
+
+      - name: Reconstruct the validation seed
+        if: steps.context.outputs.publish == 'true'
+        id: validation-seed
+        shell: bash
+        env:
+          EVENT_HEAD_SHA: ${{ github.sha }}
+          PENDING_REF: ${{ steps.pending.outputs.ref }}
+        run: |
+          set -euo pipefail
+          cd .llm-wiki-validation
+          pending_args=()
+          if [[ -n "$PENDING_REF" ]]; then
+            git fetch --no-tags origin +refs/heads/wiki/pending:refs/remotes/origin/wiki/pending
+            pending_args+=(--pending-ref refs/remotes/origin/wiki/pending)
+          fi
+          python3 scripts/wiki/prepare_context.py \
+            --repo . \
+            --base "$EVENT_HEAD_SHA" \
+            --head "$EVENT_HEAD_SHA" \
+            --output-dir "$RUNNER_TEMP/llm-wiki-validation-context" \
+            --max-files 100000 \
+            --max-diff-bytes 100000000 \
+            "${pending_args[@]}" >/dev/null
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- docs/wiki
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: snapshot pending Wiki for validation"
+          fi
+          echo "ref=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Copy generated Wiki into the validation repository
+        if: steps.context.outputs.publish == 'true'
+        run: |
+          python3 .llm-wiki-validation/scripts/wiki/sync_wiki.py \
+            --source . \
+            --target .llm-wiki-validation
+
+      - name: Validate generated Wiki changes
+        if: steps.context.outputs.publish == 'true'
+        id: validation
+        shell: bash
+        env:
+          SEED_REF: ${{ steps.validation-seed.outputs.ref }}
+        run: |
+          set -euo pipefail
+          source_key=$(python3 -c 'import json; print(json.load(open(".llm-wiki/runtime/context.json"))["source_key"])')
+          python3 .llm-wiki-validation/scripts/wiki/validate_changes.py \
+            --repo .llm-wiki-validation \
+            --base-ref "$SEED_REF" \
+            --source-key "$source_key" \
+            --max-files 30 \
+            --max-patch-bytes 500000 \
+            --report .llm-wiki/runtime/validation.json
+          changed=$(python3 -c 'import json; print(str(json.load(open(".llm-wiki/runtime/validation.json"))["changed"]).lower())')
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
+      - name: Create incremental Wiki patch artifact
+        if: steps.context.outputs.publish == 'true'
+        env:
+          EVENT_HEAD_SHA: ${{ github.sha }}
+          SEED_REF: ${{ steps.validation-seed.outputs.ref }}
+        run: |
+          cd .llm-wiki-validation
+          scripts/wiki/create_patch.sh \
+            "$SEED_REF" \
+            "$GITHUB_WORKSPACE/.llm-wiki/runtime/wiki.patch" \
+            "$GITHUB_WORKSPACE/.llm-wiki/runtime/patch-metadata.json" \
+            "$EVENT_HEAD_SHA"
+
+      - name: Upload validated patch
+        if: steps.context.outputs.publish == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: llm-wiki-patch-${{ github.run_id }}
+          path: |
+            .llm-wiki/runtime/wiki.patch
+            .llm-wiki/runtime/patch-metadata.json
+            .llm-wiki/runtime/validation.json
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-pr:
+    name: Publish managed Wiki PR
+    needs: ingest
+    if: needs.ingest.outputs.ready == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out latest main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Download validated patch
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: llm-wiki-patch-${{ github.run_id }}
+          path: ${{ runner.temp }}/llm-wiki-artifact
+
+      - name: Copy the trusted publisher outside the patch target
+        id: engine
+        shell: bash
+        run: |
+          set -euo pipefail
+          engine_dir="$RUNNER_TEMP/llm-wiki-engine"
+          mkdir -p "$engine_dir"
+          cp scripts/wiki/publish_pr.sh "$engine_dir/publish_pr.sh"
+          cp scripts/wiki/prepare_context.py "$engine_dir/prepare_context.py"
+          cp scripts/wiki/validate_changes.py "$engine_dir/validate_changes.py"
+          echo "dir=$engine_dir" >> "$GITHUB_OUTPUT"
+
+      - name: Revalidate and publish Wiki PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_KEY: github:${{ github.sha }}
+          ARTIFACT_DIR: ${{ runner.temp }}/llm-wiki-artifact
+          ENGINE_DIR: ${{ steps.engine.outputs.dir }}
+          WIKI_VALIDATOR: ${{ steps.engine.outputs.dir }}/validate_changes.py
+          WIKI_CONTEXT_PREPARER: ${{ steps.engine.outputs.dir }}/prepare_context.py
+        run: |
+          "$ENGINE_DIR/publish_pr.sh" \
+            "$ARTIFACT_DIR/wiki.patch" \
+            "$ARTIFACT_DIR/patch-metadata.json" \
+            main \
+            wiki/pending \
+            "$SOURCE_KEY"

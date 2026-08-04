@@ -13,7 +13,13 @@ from typing import Dict, List, Optional, Sequence
 
 
 ZERO_SHA = "0" * 40
-SOURCE_PATTERN = re.compile(r"github:([0-9a-f]{40})")
+LOG_ENTRY_PATTERN = re.compile(
+    r"(?m)^## [^\n]+ — `github:([0-9a-f]{40})`\s*\n\n"
+    r"- Topics: [^\n]+\n- Drift: [^\n]+(?:\n|$)"
+)
+MANAGED_SOURCE_PATTERN = re.compile(
+    r"(?m)^LLM-Wiki-Source: github:([0-9a-f]{40})\s*$"
+)
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9]+")
 IGNORED_TOKENS = {
     "acceptance",
@@ -109,15 +115,155 @@ def _parse_name_status(raw: bytes) -> List[Dict[str, str]]:
 
 
 def changed_files(repo: Path, base: str, head: str) -> List[Dict[str, str]]:
-    raw = _run_git_bytes(repo, "diff", "--name-status", "-z", base, head)
+    raw = _run_git_bytes(
+        repo, "diff", "--no-ext-diff", "--no-textconv", "--name-status", "-z", base, head
+    )
     return _parse_name_status(raw)
 
 
 def last_source_commit(log_path: Path) -> Optional[str]:
     if not log_path.is_file():
         return None
-    matches = SOURCE_PATTERN.findall(log_path.read_text(encoding="utf-8"))
+    matches = LOG_ENTRY_PATTERN.findall(log_path.read_text(encoding="utf-8"))
     return matches[-1] if matches else None
+
+
+def managed_source_commit(repo: Path, ref: str) -> Optional[str]:
+    """Read the durable source cursor from a managed commit message."""
+    message = run_git(repo, "log", "-1", "--format=%B", ref)
+    if "LLM-Wiki-Managed: true" not in message:
+        return None
+    matches = MANAGED_SOURCE_PATTERN.findall(message)
+    if len(matches) > 1:
+        raise ContextError(f"managed ref {ref} has multiple source cursors")
+    return matches[0] if matches else None
+
+
+def seed_pending_wiki(
+    repo: Path, main_ref: str, pending_ref: str
+) -> Optional[str]:
+    """Apply a managed pending branch's Wiki-only delta to the current tree."""
+    repo = repo.resolve()
+    main_sha = _commit_sha(repo, main_ref)
+    pending_sha = _commit_sha(repo, pending_ref)
+    commit_message = run_git(repo, "log", "-1", "--format=%B", pending_sha)
+    if "LLM-Wiki-Managed: true" not in commit_message:
+        raise ContextError(f"pending ref {pending_ref} is not managed by LLM Wiki")
+
+    merge_base = run_git(repo, "merge-base", main_sha, pending_sha).strip()
+    pending_changes = changed_files(repo, merge_base, pending_sha)
+    non_wiki_paths = []
+    pending_wiki_paths: set[str] = set()
+    for change in pending_changes:
+        paths = [change["path"]]
+        if "previous_path" in change:
+            paths.append(change["previous_path"])
+        for path in paths:
+            if _is_wiki_path(path):
+                pending_wiki_paths.add(path)
+            else:
+                non_wiki_paths.append(path)
+    if non_wiki_paths:
+        raise ContextError(
+            "pending ref contains non-Wiki changes: " + ", ".join(sorted(non_wiki_paths))
+        )
+
+    main_changes = changed_files(repo, merge_base, main_sha)
+    main_wiki_paths: set[str] = set()
+    for change in main_changes:
+        paths = [change["path"]]
+        if "previous_path" in change:
+            paths.append(change["previous_path"])
+        main_wiki_paths.update(path for path in paths if _is_wiki_path(path))
+    overlap = sorted(main_wiki_paths & pending_wiki_paths)
+    if overlap:
+        pending_cursor = managed_source_commit(repo, pending_sha)
+        main_log_path = repo / "docs/wiki/log.md"
+        main_log_sources = (
+            LOG_ENTRY_PATTERN.findall(main_log_path.read_text(encoding="utf-8"))
+            if main_log_path.is_file()
+            else []
+        )
+        if pending_cursor and pending_cursor in main_log_sources:
+            return main_log_sources[-1]
+        same_pending_paths = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(repo),
+                "diff",
+                "--quiet",
+                main_sha,
+                pending_sha,
+                "--",
+                *sorted(pending_wiki_paths),
+            ],
+            check=False,
+            capture_output=True,
+        )
+        if same_pending_paths.returncode == 0:
+            cursor = managed_source_commit(repo, pending_sha) or last_source_commit(
+                repo / "docs/wiki/log.md"
+            )
+            if cursor:
+                ancestor = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(repo),
+                        "merge-base",
+                        "--is-ancestor",
+                        cursor,
+                        main_sha,
+                    ],
+                    check=False,
+                    capture_output=True,
+                )
+                if ancestor.returncode != 0:
+                    raise ContextError(
+                        f"pending source commit {cursor} is not an ancestor of {main_sha}"
+                    )
+            return cursor
+        raise ContextError(
+            "main and pending Wiki changes overlap: " + ", ".join(overlap)
+        )
+
+    if pending_wiki_paths:
+        patch = _run_git_bytes(
+            repo,
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--binary",
+            merge_base,
+            pending_sha,
+            "--",
+            "docs/wiki",
+        )
+        applied = subprocess.run(
+            ["git", "-C", str(repo), "apply", "--whitespace=nowarn", "-"],
+            input=patch,
+            check=False,
+            capture_output=True,
+        )
+        if applied.returncode != 0:
+            detail = applied.stderr.decode("utf-8", "replace").strip()
+            raise ContextError(f"pending Wiki patch did not apply: {detail}")
+
+    cursor = managed_source_commit(repo, pending_sha) or last_source_commit(
+        repo / "docs/wiki/log.md"
+    )
+    if cursor:
+        ancestor = subprocess.run(
+            ["git", "-C", str(repo), "merge-base", "--is-ancestor", cursor, main_sha],
+            check=False,
+            capture_output=True,
+        )
+        if ancestor.returncode != 0:
+            raise ContextError(
+                f"pending source commit {cursor} is not an ancestor of {main_sha}"
+            )
+    return cursor
 
 
 def _tokens(path: str) -> set[str]:
@@ -207,6 +353,8 @@ def prepare_context(
         diff = _run_git_bytes(
             repo,
             "diff",
+            "--no-ext-diff",
+            "--no-textconv",
             "--binary",
             base_sha,
             head_sha,
@@ -245,15 +393,36 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--max-files", type=int, default=200)
     parser.add_argument("--max-diff-bytes", type=int, default=1_000_000)
+    parser.add_argument("--pending-ref")
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        base = args.base
+        if args.pending_ref:
+            pending_cursor = seed_pending_wiki(args.repo, args.head, args.pending_ref)
+            if pending_cursor:
+                base = pending_cursor
+        else:
+            main_cursor = last_source_commit(args.repo / "docs/wiki/log.md")
+            if main_cursor:
+                cursor_exists = subprocess.run(
+                    ["git", "-C", str(args.repo), "cat-file", "-e", f"{main_cursor}^{{commit}}"],
+                    check=False,
+                    capture_output=True,
+                )
+                cursor_is_ancestor = subprocess.run(
+                    ["git", "-C", str(args.repo), "merge-base", "--is-ancestor", main_cursor, args.head],
+                    check=False,
+                    capture_output=True,
+                )
+                if cursor_exists.returncode == 0 and cursor_is_ancestor.returncode == 0:
+                    base = main_cursor
         context = prepare_context(
             args.repo,
-            args.base,
+            base,
             args.head,
             args.output_dir,
             args.max_files,

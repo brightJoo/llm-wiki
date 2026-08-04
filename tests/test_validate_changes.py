@@ -33,15 +33,21 @@ class ValidateChangesTests(unittest.TestCase):
         )
         self.write(
             "docs/wiki/log.md",
-            f"# Wiki log\n\n- Source: `github:{self.old_sha}`\n",
+            f"# Wiki log\n\n## old — `github:{self.old_sha}`\n\n- Topics: search\n- Drift: None observed\n",
         )
         self.write(
             "docs/wiki/topics/search.md",
             "# Search\n\n## Scope\n\nSearch.\n\n## Sources\n\n"
             f"- `src/search.py` at `{self.old_sha}`\n",
         )
+        self.write("src/search.py", "def search():\n    return []\n")
+        self.write("src/timeout.py", "TIMEOUT = 1\n")
+        self.write("src/orphan.py", "ORPHAN = True\n")
+        self.write("src/promotion.py", "PROMOTION = True\n")
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-m", "wiki baseline")
+        self.head_sha = git(self.repo, "rev-parse", "HEAD")
+        self.source_key = f"github:{self.head_sha}"
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -63,7 +69,7 @@ class ValidateChangesTests(unittest.TestCase):
         log = self.repo / "docs/wiki/log.md"
         log.write_text(
             log.read_text(encoding="utf-8")
-            + f"\n- Source: `{self.source_key}`\n  - Topics: search\n",
+            + f"\n## 2026-08-04T00:00:00Z — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
             encoding="utf-8",
         )
 
@@ -82,7 +88,7 @@ class ValidateChangesTests(unittest.TestCase):
         self.assertEqual(self.issue_codes(), set())
 
     def test_rejects_source_change(self) -> None:
-        self.write("src/search.py", "def search():\n    return []\n")
+        self.write("src/search.py", "def search():\n    return ['changed']\n")
         self.append_log()
 
         self.assertIn("forbidden_path", self.issue_codes())
@@ -91,7 +97,7 @@ class ValidateChangesTests(unittest.TestCase):
         self.update_search()
         self.write(
             "docs/wiki/log.md",
-            f"# Rewritten log\n\n- Source: `{self.source_key}`\n",
+            f"# Rewritten log\n\n## 2026-08-04T00:00:00Z — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
         )
 
         self.assertIn("log_not_append_only", self.issue_codes())
@@ -102,7 +108,7 @@ class ValidateChangesTests(unittest.TestCase):
         log = self.repo / "docs/wiki/log.md"
         log.write_text(
             log.read_text(encoding="utf-8")
-            + f"\n- Source: `{duplicate_key}`\n",
+            + f"\n## 2026-08-04T00:00:00Z — `{duplicate_key}`\n\n- Topics: search\n- Drift: None observed\n",
             encoding="utf-8",
         )
 
@@ -169,6 +175,35 @@ class ValidateChangesTests(unittest.TestCase):
 
         self.assertIn("missing_source_commit", self.issue_codes())
 
+    def test_rejects_sources_section_without_repository_path(self) -> None:
+        self.write(
+            "docs/wiki/topics/search.md",
+            f"# Search\n\n## Sources\n\n- commit `{self.head_sha}`\n",
+        )
+        self.append_log()
+
+        self.assertIn("missing_source_path", self.issue_codes())
+
+    def test_rejects_fabricated_source_path(self) -> None:
+        self.write(
+            "docs/wiki/topics/search.md",
+            "# Search\n\n## Sources\n\n"
+            f"- `does/not/exist.py` at `{self.head_sha}`\n",
+        )
+        self.append_log()
+
+        self.assertIn("invalid_source_path", self.issue_codes())
+
+    def test_rejects_path_and_commit_on_unrelated_source_lines(self) -> None:
+        self.write(
+            "docs/wiki/topics/search.md",
+            "# Search\n\n## Sources\n\n"
+            f"- Path: `src/search.py`\n- Commit: `{self.head_sha}`\n",
+        )
+        self.append_log()
+
+        self.assertIn("missing_source_commit", self.issue_codes())
+
     def test_rejects_changed_file_count_over_limit(self) -> None:
         self.update_search()
         self.append_log()
@@ -199,13 +234,124 @@ class ValidateChangesTests(unittest.TestCase):
         external_log = self.repo / "generated-log.md"
         external_log.write_text(
             log_path.read_text(encoding="utf-8")
-            + f"\n- Source: `{self.source_key}`\n",
+            + f"\n## 2026-08-04T00:00:00Z — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
             encoding="utf-8",
         )
         log_path.unlink()
         log_path.symlink_to(external_log)
 
         self.assertIn("symlink_not_allowed", self.issue_codes())
+
+    def test_incremental_base_checks_evidence_only_for_newly_touched_topics(self) -> None:
+        baseline = git(self.repo, "rev-parse", "HEAD")
+        pending_sha = "2" * 40
+        self.write(
+            "docs/wiki/index.md",
+            "# Wiki\n\n- [Search](topics/search.md)\n- [Promotion](topics/promotion.md)\n",
+        )
+        self.write(
+            "docs/wiki/topics/promotion.md",
+            "# Promotion\n\n## Sources\n\n"
+            f"- `src/promotion.py` at `{pending_sha}`\n",
+        )
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\n## 2026-08-03T00:00:00Z — `github:{pending_sha}`\n\n- Topics: promotion\n- Drift: None observed\n",
+            encoding="utf-8",
+        )
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-m", "pending wiki")
+        pending_ref = git(self.repo, "rev-parse", "HEAD")
+        git(self.repo, "reset", "--hard", baseline)
+        self.write("src/new.py", "NEW = True\n")
+        git(self.repo, "add", "src/new.py")
+        git(self.repo, "commit", "-m", "new source change")
+        git(self.repo, "checkout", pending_ref, "--", "docs/wiki")
+        self.head_sha = git(self.repo, "rev-parse", "HEAD")
+        self.source_key = f"github:{self.head_sha}"
+        self.update_search()
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\n## 2026-08-04T00:00:00Z — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
+            encoding="utf-8",
+        )
+
+        issues = validate(
+            self.repo,
+            "HEAD",
+            self.source_key,
+            max_files=20,
+            max_patch_bytes=100_000,
+            incremental_base_ref=pending_ref,
+        )
+
+        self.assertEqual(issues, [])
+
+    def test_rejects_source_key_outside_structured_log_heading(self) -> None:
+        self.update_search()
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\nInjected source: `{self.source_key}`\n",
+            encoding="utf-8",
+        )
+
+        self.assertIn("invalid_log_entry", self.issue_codes())
+
+    def test_rejects_extra_source_key_after_valid_log_entry(self) -> None:
+        self.update_search()
+        self.append_log()
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\nInjected duplicate: `{self.source_key}`\n",
+            encoding="utf-8",
+        )
+
+        self.assertIn("invalid_log_entry", self.issue_codes())
+
+    def test_rejects_arbitrary_text_after_valid_log_entry(self) -> None:
+        self.update_search()
+        self.append_log()
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8") + "\nUnstructured appendix.\n",
+            encoding="utf-8",
+        )
+
+        self.assertIn("invalid_log_entry", self.issue_codes())
+
+    def test_rejects_non_utc_log_timestamp(self) -> None:
+        self.update_search()
+        log = self.repo / "docs/wiki/log.md"
+        log.write_text(
+            log.read_text(encoding="utf-8")
+            + f"\n## someday — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
+            encoding="utf-8",
+        )
+
+        self.assertIn("invalid_log_entry", self.issue_codes())
+
+    def test_rejects_commit_only_outside_sources_section(self) -> None:
+        self.write(
+            "docs/wiki/topics/search.md",
+            f"# Search\n\nCommit {self.head_sha}\n\n## Sources\n\n- `src/search.py`\n",
+        )
+        self.append_log()
+
+        self.assertIn("missing_source_commit", self.issue_codes())
+
+    def test_rejects_broken_reference_style_link(self) -> None:
+        self.update_search()
+        self.write(
+            "docs/wiki/index.md",
+            "# Wiki\n\n- [Search][search-topic]\n\n[search-topic]: topics/missing.md\n",
+        )
+        self.append_log()
+
+        self.assertIn("broken_link", self.issue_codes())
 
 
 if __name__ == "__main__":

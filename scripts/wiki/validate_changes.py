@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -16,6 +17,17 @@ from urllib.parse import unquote
 
 SOURCE_KEY_PATTERN = re.compile(r"^github:([0-9a-f]{40})$")
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+REFERENCE_DEFINITION_PATTERN = re.compile(r"(?m)^\[([^\]]+)\]:\s*(\S.*)$")
+REFERENCE_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
+APPENDED_LOG_PATTERN = re.compile(
+    r"\n?## (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) — "
+    r"`(github:[0-9a-f]{40})`\n\n"
+    r"- Topics: [^\n]+\n- Drift: [^\n]+\n?"
+)
+ANY_SOURCE_PATTERN = re.compile(r"github:[0-9a-f]{40}")
+SOURCE_ENTRY_PATTERN = re.compile(
+    r"(?m)^- `([^`\n]+)` at `([0-9a-f]{40})`\s*$"
+)
 
 
 @dataclass(frozen=True)
@@ -68,7 +80,16 @@ def _parse_name_status(raw: bytes) -> List[Dict[str, str]]:
 
 def _changes(repo: Path, base_ref: str) -> List[Dict[str, str]]:
     tracked = _parse_name_status(
-        _git(repo, "diff", "--name-status", "-z", base_ref, text=False)
+        _git(
+            repo,
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--name-status",
+            "-z",
+            base_ref,
+            text=False,
+        )
     )
     known_paths = {item["path"] for item in tracked}
     untracked_raw = _git(
@@ -103,7 +124,15 @@ def _base_bytes(repo: Path, base_ref: str, path: str) -> bytes:
 
 
 def _patch_size(repo: Path, base_ref: str, changes: Iterable[Dict[str, str]]) -> int:
-    tracked_diff = _git(repo, "diff", "--binary", base_ref, text=False)
+    tracked_diff = _git(
+        repo,
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--binary",
+        base_ref,
+        text=False,
+    )
     size = len(tracked_diff)
     for change in changes:
         if change["status"] == "A":
@@ -142,7 +171,24 @@ def _wiki_graph(repo: Path) -> Tuple[Dict[Path, set[Path]], List[ValidationIssue
         resolved_document = document.resolve()
         graph.setdefault(resolved_document, set())
         content = document.read_text(encoding="utf-8")
-        for raw_target in MARKDOWN_LINK_PATTERN.findall(content):
+        definitions = {
+            label.casefold(): target
+            for label, target in REFERENCE_DEFINITION_PATTERN.findall(content)
+        }
+        raw_targets = list(MARKDOWN_LINK_PATTERN.findall(content))
+        for label, reference in REFERENCE_LINK_PATTERN.findall(content):
+            key = (reference or label).casefold()
+            if key in definitions:
+                raw_targets.append(definitions[key])
+            else:
+                issues.append(
+                    ValidationIssue(
+                        "broken_link",
+                        document.relative_to(repo).as_posix(),
+                        f"reference link has no definition: {key}",
+                    )
+                )
+        for raw_target in raw_targets:
             target = _link_target(raw_target)
             if target is None:
                 continue
@@ -187,12 +233,45 @@ def _reachable_topics(repo: Path, graph: Dict[Path, set[Path]]) -> set[Path]:
     return {path for path in visited if _inside(path, topics_root)}
 
 
+def _valid_source_path(repo: Path, source_sha: str, raw_path: str) -> bool:
+    candidate = Path(raw_path)
+    if candidate.is_absolute() or ".." in candidate.parts or "." in candidate.parts:
+        return False
+    exists = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{source_sha}:{raw_path}"],
+        check=False,
+        capture_output=True,
+    )
+    if exists.returncode == 0:
+        return True
+    changed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            source_sha,
+            "--",
+            raw_path,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return changed.returncode == 0 and raw_path in changed.stdout.splitlines()
+
+
 def validate(
     repo: Path,
     base_ref: str,
     source_key: str,
     max_files: int,
     max_patch_bytes: int,
+    incremental_base_ref: Optional[str] = None,
 ) -> List[ValidationIssue]:
     repo = repo.resolve()
     issues: List[ValidationIssue] = []
@@ -207,6 +286,8 @@ def validate(
     changes = _changes(repo, base_ref)
     if not changes:
         return issues
+    incremental_ref = incremental_base_ref or base_ref
+    incremental_changes = _changes(repo, incremental_ref)
 
     if len(changes) > max_files:
         issues.append(
@@ -247,7 +328,7 @@ def validate(
                 )
             )
 
-    base_log = _base_bytes(repo, base_ref, "docs/wiki/log.md")
+    base_log = _base_bytes(repo, incremental_ref, "docs/wiki/log.md")
     log_path = repo / "docs/wiki/log.md"
     current_log = log_path.read_bytes() if log_path.is_file() else b""
     if source_key.encode("utf-8") in base_log:
@@ -269,13 +350,31 @@ def validate(
         appended_log = current_log
     else:
         appended_log = current_log[len(base_log) :]
-    occurrences = appended_log.count(source_key.encode("utf-8"))
-    if occurrences != 1:
+    try:
+        appended_text = appended_log.decode("utf-8")
+    except UnicodeDecodeError:
+        appended_text = ""
+    entry_match = APPENDED_LOG_PATTERN.fullmatch(appended_text)
+    valid_timestamp = False
+    if entry_match is not None:
+        try:
+            datetime.strptime(entry_match.group(1), "%Y-%m-%dT%H:%M:%SZ")
+            valid_timestamp = True
+        except ValueError:
+            pass
+    all_tokens = ANY_SOURCE_PATTERN.findall(appended_text)
+    valid_entry = (
+        entry_match is not None
+        and valid_timestamp
+        and entry_match.group(2) == source_key
+        and all_tokens == [source_key]
+    )
+    if not valid_entry:
         issues.append(
             ValidationIssue(
-                "source_key_count",
+                "invalid_log_entry",
                 "docs/wiki/log.md",
-                f"new log content must contain source key exactly once; found {occurrences}",
+                "new log content must contain one structured entry for the source key",
             )
         )
 
@@ -297,7 +396,7 @@ def validate(
             )
         )
 
-    for change in changes:
+    for change in incremental_changes:
         path = change["path"]
         if not path.startswith("docs/wiki/topics/") or change["status"].startswith("D"):
             continue
@@ -305,18 +404,44 @@ def validate(
         if not topic_path.is_file():
             continue
         content = topic_path.read_text(encoding="utf-8")
-        if not re.search(r"(?m)^## Sources\s*$", content):
+        sources_match = re.search(
+            r"(?ms)^## Sources\s*$\n(.*?)(?=^##\s|\Z)", content
+        )
+        if sources_match is None:
             issues.append(
                 ValidationIssue(
                     "missing_sources", path, "changed Topic must contain a Sources section"
                 )
             )
-        if head_sha not in content:
+            sources = ""
+        else:
+            sources = sources_match.group(1)
+        source_entries = SOURCE_ENTRY_PATTERN.findall(sources)
+        head_paths = [path for path, sha in source_entries if sha == head_sha]
+        if not head_paths:
             issues.append(
                 ValidationIssue(
                     "missing_source_commit",
                     path,
                     "changed Topic must cite the source commit",
+                )
+            )
+        if not source_entries:
+            issues.append(
+                ValidationIssue(
+                    "missing_source_path",
+                    path,
+                    "changed Topic must cite at least one repository path",
+                )
+            )
+        elif head_paths and not any(
+            _valid_source_path(repo, head_sha, path) for path in head_paths
+        ):
+            issues.append(
+                ValidationIssue(
+                    "invalid_source_path",
+                    path,
+                    "source path must exist at or be changed by the cited commit",
                 )
             )
     return issues
@@ -327,6 +452,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--repo", type=Path, default=Path("."))
     parser.add_argument("--base-ref", default="HEAD")
     parser.add_argument("--source-key", required=True)
+    parser.add_argument("--incremental-base-ref")
     parser.add_argument("--max-files", type=int, default=30)
     parser.add_argument("--max-patch-bytes", type=int, default=500_000)
     parser.add_argument("--report", type=Path)
@@ -343,6 +469,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.source_key,
             args.max_files,
             args.max_patch_bytes,
+            args.incremental_base_ref,
         )
     except (OSError, RuntimeError, UnicodeError) as error:
         print(f"validate-changes: {error}", file=sys.stderr)

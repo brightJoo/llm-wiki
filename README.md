@@ -163,7 +163,8 @@ GitHub 저장소에는 다음 설정이 필요합니다.
 
 - GitHub event 값은 prompt나 inline shell에 직접 삽입하지 않고 환경 변수와 JSON context로 전달합니다.
 - Claude CLI는 `--tools`로 읽기·검색·Wiki 편집 도구만 노출하고 MCP, slash command, session persistence를 끕니다.
-- Claude가 수정한 작업 트리는 Claude가 수정할 수 없는 pristine checkout의 엔진으로 허용 경로, symlink, append-only log, source key, Topic 링크, 근거 commit, 파일 수, patch 크기를 검사합니다.
+- Claude가 수정한 작업 트리는 Claude가 수정할 수 없는 pristine checkout의 엔진으로 허용 경로, symlink, append-only log, source key, Topic 링크, 근거 경로와 commit, 파일 수, patch 크기를 검사합니다.
+- patch metadata에는 Claude가 읽은 `docs/wiki` seed tree hash가 포함되며, publish 시 재구성한 seed와 정확히 일치하지 않으면 새 실행에서 다시 컴파일합니다.
 - publish job은 저장소 밖으로 복사한 trusted engine을 사용합니다. artifact checksum을 확인하고 disposable worktree에서 patch를 적용·재검증한 뒤에만 실제 managed branch를 갱신합니다.
 - 외부 GitHub Actions는 full commit SHA로 고정하고 Claude Code CLI 버전도 고정합니다.
 - 기본 한도는 source 변경 200개·입력 diff 1 MB·Wiki 변경 30개·Wiki patch 500 KB·Claude 8 turns입니다.

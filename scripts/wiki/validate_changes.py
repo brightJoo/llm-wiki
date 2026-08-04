@@ -8,6 +8,7 @@ import json
 import re
 import subprocess
 import sys
+from datetime import datetime
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -18,12 +19,15 @@ SOURCE_KEY_PATTERN = re.compile(r"^github:([0-9a-f]{40})$")
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 REFERENCE_DEFINITION_PATTERN = re.compile(r"(?m)^\[([^\]]+)\]:\s*(\S.*)$")
 REFERENCE_LINK_PATTERN = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
-LOG_ENTRY_PATTERN = re.compile(
-    r"(?m)^## [^\n]+ — `(github:[0-9a-f]{40})`\s*\n\n"
-    r"- Topics: [^\n]+\n- Drift: [^\n]+(?:\n|$)"
+APPENDED_LOG_PATTERN = re.compile(
+    r"\n?## (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z) — "
+    r"`(github:[0-9a-f]{40})`\n\n"
+    r"- Topics: [^\n]+\n- Drift: [^\n]+\n?"
 )
 ANY_SOURCE_PATTERN = re.compile(r"github:[0-9a-f]{40}")
-INLINE_CODE_PATTERN = re.compile(r"`([^`]+)`")
+SOURCE_ENTRY_PATTERN = re.compile(
+    r"(?m)^- `([^`\n]+)` at `([0-9a-f]{40})`\s*$"
+)
 
 
 @dataclass(frozen=True)
@@ -229,6 +233,38 @@ def _reachable_topics(repo: Path, graph: Dict[Path, set[Path]]) -> set[Path]:
     return {path for path in visited if _inside(path, topics_root)}
 
 
+def _valid_source_path(repo: Path, source_sha: str, raw_path: str) -> bool:
+    candidate = Path(raw_path)
+    if candidate.is_absolute() or ".." in candidate.parts or "." in candidate.parts:
+        return False
+    exists = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "-e", f"{source_sha}:{raw_path}"],
+        check=False,
+        capture_output=True,
+    )
+    if exists.returncode == 0:
+        return True
+    changed = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "diff-tree",
+            "--root",
+            "--no-commit-id",
+            "--name-only",
+            "-r",
+            source_sha,
+            "--",
+            raw_path,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    return changed.returncode == 0 and raw_path in changed.stdout.splitlines()
+
+
 def validate(
     repo: Path,
     base_ref: str,
@@ -318,10 +354,19 @@ def validate(
         appended_text = appended_log.decode("utf-8")
     except UnicodeDecodeError:
         appended_text = ""
-    heading_sources = LOG_ENTRY_PATTERN.findall(appended_text)
+    entry_match = APPENDED_LOG_PATTERN.fullmatch(appended_text)
+    valid_timestamp = False
+    if entry_match is not None:
+        try:
+            datetime.strptime(entry_match.group(1), "%Y-%m-%dT%H:%M:%SZ")
+            valid_timestamp = True
+        except ValueError:
+            pass
     all_tokens = ANY_SOURCE_PATTERN.findall(appended_text)
     valid_entry = (
-        heading_sources == [source_key]
+        entry_match is not None
+        and valid_timestamp
+        and entry_match.group(2) == source_key
         and all_tokens == [source_key]
     )
     if not valid_entry:
@@ -371,7 +416,9 @@ def validate(
             sources = ""
         else:
             sources = sources_match.group(1)
-        if head_sha not in sources:
+        source_entries = SOURCE_ENTRY_PATTERN.findall(sources)
+        head_paths = [path for path, sha in source_entries if sha == head_sha]
+        if not head_paths:
             issues.append(
                 ValidationIssue(
                     "missing_source_commit",
@@ -379,17 +426,22 @@ def validate(
                     "changed Topic must cite the source commit",
                 )
             )
-        evidence_paths = [
-            value
-            for value in INLINE_CODE_PATTERN.findall(sources)
-            if value != head_sha and ("/" in value or "." in Path(value).name)
-        ]
-        if not evidence_paths:
+        if not source_entries:
             issues.append(
                 ValidationIssue(
                     "missing_source_path",
                     path,
                     "changed Topic must cite at least one repository path",
+                )
+            )
+        elif head_paths and not any(
+            _valid_source_path(repo, head_sha, path) for path in head_paths
+        ):
+            issues.append(
+                ValidationIssue(
+                    "invalid_source_path",
+                    path,
+                    "source path must exist at or be changed by the cited commit",
                 )
             )
     return issues

@@ -201,6 +201,9 @@ class PatchArtifactTests(unittest.TestCase):
         self.assertEqual(metadata["bytes"], len(patch_bytes))
         self.assertEqual(metadata["sha256"], hashlib.sha256(patch_bytes).hexdigest())
         self.assertEqual(metadata["base_ref"], self.base)
+        self.assertEqual(
+            metadata["seed_tree"], git(self.repo, "rev-parse", f"{self.base}:docs/wiki")
+        )
 
     def test_empty_wiki_diff_produces_changed_false(self) -> None:
         completed = self.create_patch()
@@ -274,6 +277,21 @@ class SyncWikiTests(unittest.TestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertEqual(sentinel.read_text(encoding="utf-8"), "# Trusted\n")
 
+    def test_rejects_symlinked_wiki_root_before_changing_target(self) -> None:
+        outside = self.root / "outside-wiki"
+        outside.mkdir()
+        (outside / "index.md").write_text("# Outside\n", encoding="utf-8")
+        (self.source / "docs/wiki/topics").rmdir()
+        (self.source / "docs/wiki").rmdir()
+        (self.source / "docs/wiki").symlink_to(outside, target_is_directory=True)
+        sentinel = self.target / "docs/wiki/index.md"
+        sentinel.write_text("# Trusted\n", encoding="utf-8")
+
+        completed = self.sync()
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(sentinel.read_text(encoding="utf-8"), "# Trusted\n")
+
 
 class PublisherTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -303,6 +321,8 @@ class PublisherTests(unittest.TestCase):
             "# Search\n\n## Sources\n\n"
             f"- `src/search.py` at `{self.old_sha}`\n",
         )
+        self.write_seed("src/search.py", "def search():\n    return []\n")
+        self.write_seed("src/promotion.py", "PROMOTION = True\n")
         git(self.seed, "add", ".")
         git(self.seed, "commit", "-m", "baseline")
         self.base = git(self.seed, "rev-parse", "HEAD")
@@ -369,7 +389,7 @@ class PublisherTests(unittest.TestCase):
             log_path = self.seed / "docs/wiki/log.md"
             log_path.write_text(
                 log_path.read_text(encoding="utf-8")
-                + f"\n## now — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
+                + f"\n## 2026-08-04T00:00:00Z — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
                 encoding="utf-8",
             )
         completed = run(
@@ -526,7 +546,7 @@ class PublisherTests(unittest.TestCase):
         log_path = self.seed / "docs/wiki/log.md"
         log_path.write_text(
             log_path.read_text(encoding="utf-8")
-            + f"\n## second — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
+            + f"\n## 2026-08-04T01:00:00Z — `{self.source_key}`\n\n- Topics: search\n- Drift: None observed\n",
             encoding="utf-8",
         )
         artifact = run(
@@ -570,7 +590,7 @@ class PublisherTests(unittest.TestCase):
         self.write_seed(
             "docs/wiki/log.md",
             (self.seed / "docs/wiki/log.md").read_text(encoding="utf-8")
-            + f"\n## now — `{self.source_key}`\n\n- Topics: None\n- Drift: None observed\n",
+            + f"\n## 2026-08-04T00:00:00Z — `{self.source_key}`\n\n- Topics: None\n- Drift: None observed\n",
         )
         raw = run(
             "git", "diff", "--binary", self.base, cwd=self.seed
@@ -586,6 +606,7 @@ class PublisherTests(unittest.TestCase):
                     "bytes": len(patch_bytes),
                     "sha256": hashlib.sha256(patch_bytes).hexdigest(),
                     "base_ref": self.base,
+                    "seed_tree": git(self.seed, "rev-parse", f"{self.base}:docs/wiki"),
                 }
             )
             + "\n",
@@ -601,6 +622,18 @@ class PublisherTests(unittest.TestCase):
             (clone / "scripts/wiki/validate_changes.py").read_text(encoding="utf-8"),
             "print('trusted')\n",
         )
+
+    def test_rejects_artifact_with_different_seed_tree(self) -> None:
+        self.build_artifact()
+        metadata = json.loads(self.metadata.read_text(encoding="utf-8"))
+        metadata["seed_tree"] = "0" * 40
+        self.metadata.write_text(json.dumps(metadata) + "\n", encoding="utf-8")
+        clone = self.clone_publisher()
+
+        completed = self.publish(clone)
+
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("seed", completed.stderr)
 
 
 

@@ -13,6 +13,7 @@ source_base_ref=${4:-$base_ref}
 
 git rev-parse --verify "${base_ref}^{commit}" >/dev/null
 git rev-parse --verify "${source_base_ref}^{commit}" >/dev/null
+seed_tree=$(git rev-parse "${base_ref}:docs/wiki" 2>/dev/null || printf 'absent')
 mkdir -p "$(dirname "$patch_path")" "$(dirname "$metadata_path")"
 
 temporary_index=$(mktemp "${TMPDIR:-/tmp}/llm-wiki-index.XXXXXX")
@@ -29,7 +30,7 @@ if [[ -e docs/wiki ]] || git ls-tree -d --name-only "$base_ref" docs/wiki | grep
 fi
 git diff --cached --no-ext-diff --no-textconv --binary "$base_ref" -- docs/wiki > "$patch_path"
 
-python3 - "$patch_path" "$metadata_path" "$source_base_ref" <<'PY'
+python3 - "$patch_path" "$metadata_path" "$source_base_ref" "$seed_tree" <<'PY'
 import hashlib
 import json
 import sys
@@ -44,6 +45,7 @@ metadata = {
     "bytes": len(patch),
     "sha256": hashlib.sha256(patch).hexdigest(),
     "base_ref": sys.argv[3],
+    "seed_tree": sys.argv[4],
 }
 metadata_path.write_text(
     json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",

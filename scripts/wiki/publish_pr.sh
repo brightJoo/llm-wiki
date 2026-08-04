@@ -54,7 +54,7 @@ from pathlib import Path
 
 patch = Path(sys.argv[1]).read_bytes()
 metadata = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-required = {"version", "changed", "bytes", "sha256", "base_ref"}
+required = {"version", "changed", "bytes", "sha256", "base_ref", "seed_tree"}
 if set(metadata) != required or metadata["version"] != 1:
     raise SystemExit("invalid patch metadata schema")
 if not isinstance(metadata["changed"], bool):
@@ -68,10 +68,17 @@ if metadata["changed"] != bool(patch):
 base_ref = metadata["base_ref"]
 if not isinstance(base_ref, str) or not base_ref:
     raise SystemExit("invalid patch base ref")
-print(("true" if metadata["changed"] else "false") + "\t" + base_ref)
+seed_tree = metadata["seed_tree"]
+if seed_tree != "absent" and not (
+    isinstance(seed_tree, str)
+    and len(seed_tree) == 40
+    and all(character in "0123456789abcdef" for character in seed_tree)
+):
+    raise SystemExit("invalid Wiki seed tree")
+print(("true" if metadata["changed"] else "false") + "\t" + base_ref + "\t" + seed_tree)
 PY
 )
-IFS=$'\t' read -r artifact_changed artifact_base_ref <<< "$metadata_values"
+IFS=$'\t' read -r artifact_changed artifact_base_ref artifact_seed_tree <<< "$metadata_values"
 
 git fetch --no-tags origin "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}"
 base_ref="refs/remotes/origin/${base_branch}"
@@ -168,6 +175,11 @@ git worktree add --detach "$preflight_dir" "$base_ref" >/dev/null
 preflight_registered=true
 seed_wiki "$preflight_dir" "$runtime_dir/preflight"
 seed_ref=$(git -C "$preflight_dir" rev-parse HEAD)
+publisher_seed_tree=$(git -C "$preflight_dir" rev-parse "HEAD:docs/wiki" 2>/dev/null || printf 'absent')
+if [[ "$publisher_seed_tree" != "$artifact_seed_tree" ]]; then
+  echo "publish-pr: Wiki seed changed after compilation" >&2
+  exit 1
+fi
 if [[ "$artifact_changed" == "true" ]]; then
   git -C "$preflight_dir" apply --check "$patch_path"
   git -C "$preflight_dir" apply "$patch_path"

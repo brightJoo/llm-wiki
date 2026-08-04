@@ -80,6 +80,7 @@ Use this log shape:
 
 - Code and tests describe the current implementation.
 - Spec and LLD describe approved intent.
+- Each changed Topic must cite evidence as `- \`<repository-path>\` at \`<40-character-commit-sha>\`` inside `## Sources`.
 - When they disagree, document current behavior and record the mismatch under `## Drift`; never silently modify the Spec.
 - When evidence is incomplete or contradictory, write `Unverified` and state what remains unknown.
 - Do not infer operational guarantees, downstream contracts, or failure behavior without evidence.

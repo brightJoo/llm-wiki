@@ -225,3 +225,61 @@ def validate_topic_metadata(metadata: dict[str, object], profile: dict[str, obje
                 issues.append(ContractIssue("invalid_topic_relations", path, "undeclared or duplicate relationship"))
             seen.add(pair)
     return issues
+
+
+def validate_topic_graph(inventory: list[dict[str, object]], profile: dict[str, object], changed_paths: set[str], base_inventory: list[dict[str, object]]) -> list[ContractIssue]:
+    """Check stable identities, gradual migration, typed edges, links and exception DAGs."""
+    issues = []
+    current = {record['path']: record for record in inventory}
+    by_id = {}
+    for record in inventory:
+        path, metadata = record['path'], record.get('metadata')
+        if metadata is None:
+            if path in changed_paths:
+                issues.append(ContractIssue('missing_topic_metadata', path, 'changed profiled Topic needs metadata'))
+            continue
+        local = validate_topic_metadata(metadata, profile, path)
+        issues.extend(local)
+        if local:
+            continue
+        topic_id = metadata['id']
+        if topic_id in by_id:
+            issues.append(ContractIssue('duplicate_topic_id', path, f'duplicate Topic id: {topic_id}'))
+        else:
+            by_id[topic_id] = record
+    for record in base_inventory:
+        path, old = record['path'], record.get('metadata')
+        if path not in current:
+            issues.append(ContractIssue('deleted_topic', path, 'retain Topic path and mark lifecycle retired'))
+        elif old and current[path].get('metadata') and old.get('id') != current[path]['metadata'].get('id'):
+            issues.append(ContractIssue('changed_topic_id', path, 'existing Topic ID must be preserved'))
+    exception_edges = {topic_id: set() for topic_id in by_id}
+    for topic_id, record in by_id.items():
+        metadata, path = record['metadata'], record['path']
+        for edge in metadata['relations']:
+            target = by_id.get(edge['target'])
+            if target is None:
+                issues.append(ContractIssue('missing_relation_target', path, f'target needs valid metadata: {edge["target"]}'))
+                continue
+            rule = profile['relation_rules'][edge['type']]
+            if metadata['type'] not in rule['from'] or target['metadata']['type'] not in rule['to']:
+                issues.append(ContractIssue('wrong_relation_type', path, f'invalid endpoints for {edge["type"]}'))
+            if target['path'] not in record.get('links', []):
+                issues.append(ContractIssue('missing_relation_link', path, f'body must link to {target["path"]}'))
+            if edge['type'] == 'exception_of':
+                exception_edges[topic_id].add(edge['target'])
+    # Kahn's algorithm avoids stack overflow even for large permitted Wiki inventories.
+    incoming = {topic_id: 0 for topic_id in exception_edges}
+    for targets in exception_edges.values():
+        for target in targets:
+            incoming[target] += 1
+    pending = [topic_id for topic_id, count in incoming.items() if count == 0]
+    while pending:
+        topic_id = pending.pop()
+        for target in exception_edges[topic_id]:
+            incoming[target] -= 1
+            if incoming[target] == 0:
+                pending.append(target)
+    if any(incoming.values()):
+        issues.append(ContractIssue('exception_cycle', 'docs/wiki/topics', 'exception_of relationships must be acyclic'))
+    return issues

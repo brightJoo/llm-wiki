@@ -1,6 +1,6 @@
 # Domain-aware LLM Wiki Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 기존 Wiki 엔진에 도메인별 Topic 분류 계약, 적용 범위·관계 검증, 분류 이유의 검토·게시 기능을 추가.
 
@@ -66,7 +66,7 @@
 - `validate_topic_metadata(metadata: dict[str, object], profile: dict[str, object], path: str) -> list[ContractIssue]`
 - `ContractError`와 `ContractIssue`를 이후 task에 제공.
 
-- [ ] **Step 1: 계약의 실패 테스트 작성.** 프로필 예제는 승인된 설계의 JSON과 동일. `test_rejects_duplicate_keys_and_bool_version`, `test_ignores_heading_inside_code_fence`, `test_rejects_multiple_metadata_blocks`, `test_legacy_topic_without_metadata`, `test_rejects_unknown_scope_and_empty_array`, `test_accepts_explicit_null_scope`, `test_profile_is_read_from_source_commit` 포함.
+- [x] **Step 1: 계약의 실패 테스트 작성.** 프로필 예제는 승인된 설계의 JSON과 동일. `test_rejects_duplicate_keys_and_bool_version`, `test_ignores_heading_inside_code_fence`, `test_rejects_multiple_metadata_blocks`, `test_legacy_topic_without_metadata`, `test_rejects_unknown_scope_and_empty_array`, `test_accepts_explicit_null_scope`, `test_profile_is_read_from_source_commit` 포함.
 
 테스트 `setUp`에서 `self.profile`은 Demo 프로필을 파싱. `valid_metadata(self) -> dict[str, object]`는 spec의 ranking 메타데이터 새 복사본을 반환하는 test helper.
 
@@ -83,10 +83,10 @@ def test_accepts_explicit_null_scope(self):
     self.assertIsNone(metadata["scope"]["surfaces"])
 ```
 
-- [ ] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_topic_contract.py -v` → 새 모듈 미구현 또는 계약 assertion 실패.
-- [ ] **Step 3: 위 함수와 예제 프로필 구현.** 중복 JSON 키 거부, 정확한 정수 version 확인, Markdown fence 내부 heading 제외, `Topic metadata` 절의 JSON 블록 한 개만 인정. 선언된 프로필 값과 필수 차원을 검사하고 JSON 문제를 legacy fallback으로 숨기지 않음.
-- [ ] **Step 4: GREEN 확인.** 같은 명령 → 모든 Task 1 테스트 통과. 예제 프로필이 실제 Wiki나 실제 회사 정책으로 표시되지 않았는지 확인.
-- [ ] **Step 5: 해당 파일만 commit.** `feat: add domain and topic metadata contracts`.
+- [x] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_topic_contract.py -v` → 새 모듈 미구현 또는 계약 assertion 실패.
+- [x] **Step 3: 위 함수와 예제 프로필 구현.** 중복 JSON 키 거부, 정확한 정수 version 확인, Markdown fence 내부 heading 제외, `Topic metadata` 절의 JSON 블록 한 개만 인정. 선언된 프로필 값과 필수 차원을 검사하고 JSON 문제를 legacy fallback으로 숨기지 않음.
+- [x] **Step 4: GREEN 확인.** 같은 명령 → 모든 Task 1 테스트 통과. 예제 프로필이 실제 Wiki나 실제 회사 정책으로 표시되지 않았는지 확인.
+- [x] **Step 5: 해당 파일만 commit.** `feat: add domain and topic metadata contracts`.
 
 ## Task 2: 기존 문서 목록과 후보·관계 검색
 
@@ -98,7 +98,7 @@ def test_accepts_explicit_null_scope(self):
 - `build_reverse_relations(inventory: list[dict[str, object]]) -> dict[str, list[dict[str, str]]]`: target ID → 출발 ID·관계 유형.
 - 기존 context에 `domain_profile`, `topic_inventory_path`, `topic_candidates`, `topic_candidates_truncated`를 프로필 사용 시에만 추가. inventory JSON은 엔진이 runtime에 작성.
 
-- [ ] **Step 1: 실패 테스트 작성.** `test_includes_legacy_topic_in_candidates`, `test_matches_renamed_previous_source_path`, `test_does_not_merge_matching_aliases_across_services`, `test_reverse_relations_preserve_edge_type`, `test_candidate_limit_reports_truncation`, `test_reads_seed_inventory_by_git_ref`, `test_no_profile_preserves_existing_context` 포함. legacy metadata는 `None`, rename의 이전 근거 경로는 후보에 포함, 동일 입력의 결과 순서는 같다고 assert.
+- [x] **Step 1: 실패 테스트 작성.** `test_includes_legacy_topic_in_candidates`, `test_matches_renamed_previous_source_path`, `test_does_not_merge_matching_aliases_across_services`, `test_reverse_relations_preserve_edge_type`, `test_candidate_limit_reports_truncation`, `test_reads_seed_inventory_by_git_ref`, `test_no_profile_preserves_existing_context` 포함. legacy metadata는 `None`, rename의 이전 근거 경로는 후보에 포함, 동일 입력의 결과 순서는 같다고 assert.
 
 ```python
 def test_includes_legacy_topic_in_candidates(self):
@@ -111,10 +111,10 @@ def test_includes_legacy_topic_in_candidates(self):
 ```
 
 `setUp`의 `self.profile`은 Task 1의 Demo 프로필을 파싱해 설정.
-- [ ] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_topic_inventory.py -v` → 미구현 실패.
-- [ ] **Step 3: inventory·후보 선택과 context 연결 구현.** 직접 source 경로 일치를 최우선으로 하며 rename 이전 경로도 포함. 이어 Topic 제목·질문·범위 별칭과 변경 경로의 토큰 일치로 후보 선택, 동점은 경로 순. 역관계는 영향 검토 후보이며 의미 동일성의 증거가 아님. 기본 후보 한도 20, 절단 여부 명시. ref 지정 시 Git blob을 읽으며 symlink Git mode도 거부. 프로필 없는 context는 기존 필드·skip 동작 유지.
-- [ ] **Step 4: GREEN·회귀 확인.** `python3 -m unittest discover -s tests -p test_topic_inventory.py -v`, `python3 -m unittest discover -s tests -p test_prepare_context.py -v` → 모두 통과. inventory의 symlink·한도 초과는 읽기 실패로 처리.
-- [ ] **Step 5: 해당 파일만 commit.** `feat: retrieve wiki topics using scope and source relationships`.
+- [x] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_topic_inventory.py -v` → 미구현 실패.
+- [x] **Step 3: inventory·후보 선택과 context 연결 구현.** 직접 source 경로 일치를 최우선으로 하며 rename 이전 경로도 포함. 이어 Topic 제목·질문·범위 별칭과 변경 경로의 토큰 일치로 후보 선택, 동점은 경로 순. 역관계는 영향 검토 후보이며 의미 동일성의 증거가 아님. 기본 후보 한도 20, 절단 여부 명시. ref 지정 시 Git blob을 읽으며 symlink Git mode도 거부. 프로필 없는 context는 기존 필드·skip 동작 유지.
+- [x] **Step 4: GREEN·회귀 확인.** `python3 -m unittest discover -s tests -p test_topic_inventory.py -v`, `python3 -m unittest discover -s tests -p test_prepare_context.py -v` → 모두 통과. inventory의 symlink·한도 초과는 읽기 실패로 처리.
+- [x] **Step 5: 해당 파일만 commit.** `feat: retrieve wiki topics using scope and source relationships`.
 
 ## Task 3: Topic 관계·수명과 일별 출처 검증
 
@@ -126,7 +126,7 @@ def test_includes_legacy_topic_in_candidates(self):
 - `validate_topic_graph(inventory: list[dict[str, object]], profile: dict[str, object], changed_paths: set[str], base_inventory: list[dict[str, object]]) -> list[ContractIssue]`
 - 기존 `validate(...)` 끝에 keyword-only 선택 인자 `source_base_ref: Optional[str] = None`, `classification_path: Optional[Path] = None` 추가. CLI `--source-base-ref`, `--classification-report` 제공. 기존 인자·v1 호출 유지.
 
-- [ ] **Step 1: 실패 테스트 작성.** `test_rejects_duplicate_topic_id`, `test_rejects_missing_or_wrong_type_relation`, `test_requires_relation_body_link`, `test_rejects_exception_cycle`, `test_preserves_untouched_legacy_topic`, `test_requires_metadata_on_changed_profiled_topic`, `test_rejects_changed_existing_id_and_topic_deletion` 포함. self-loop도 exception cycle로 거부. ID 변경·물리 삭제는 거부하며 retired 전환은 허용.
+- [x] **Step 1: 실패 테스트 작성.** `test_rejects_duplicate_topic_id`, `test_rejects_missing_or_wrong_type_relation`, `test_requires_relation_body_link`, `test_rejects_exception_cycle`, `test_preserves_untouched_legacy_topic`, `test_requires_metadata_on_changed_profiled_topic`, `test_rejects_changed_existing_id_and_topic_deletion` 포함. self-loop도 exception cycle로 거부. ID 변경·물리 삭제는 거부하며 retired 전환은 허용.
 같은 test 작성 단계에 `test_accepts_path_deleted_before_last_commit`, `test_rejects_deletion_outside_source_range`, `test_rejects_non_ancestor_base`, `test_rejects_fabricated_extra_source_even_with_valid_source`, `test_accepts_indented_source_explanation` 포함.
 
 ```python
@@ -138,10 +138,10 @@ def test_accepts_path_deleted_before_last_commit(self):
 
 이 test의 `setUp`은 임시 Git repo에 baseline `src/deleted.py` 생성 → 삭제 commit → 다른 파일 수정 commit 순서. `self.source_base_sha`는 baseline, `self.head_sha`는 마지막 commit, `self.repo`는 임시 repo 경로.
 
-- [ ] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_source_evidence.py -v`, `python3 -m unittest discover -s tests -p test_validate_changes.py -v` → 새 범위·관계 검사 테스트 실패.
-- [ ] **Step 3: 위 인터페이스와 validator 합성 구현.** profile은 artifact의 source head에서, base inventory는 Wiki diff의 seed `base_ref`에서 읽음. 변경한 profiled Topic과 참조된 ID 대상은 새 형식 필요, 무관한 legacy 문서는 일괄 전환하지 않음. 관계는 본문의 실제 상대 링크와 대조. 모든 해당 head 출처를 검사해 유효한 한 경로가 가짜 경로를 숨기지 못하게 함. source 범위 없는 기존 호출의 삭제 근거 규칙은 유지.
-- [ ] **Step 4: GREEN·기존 회귀 확인.** `python3 -m unittest discover -s tests -p test_source_evidence.py -v`, `python3 -m unittest discover -s tests -p test_validate_changes.py -v` → 통과. 기존 log byte prefix·source key·허용 경로·도달성·patch 한도 검사는 그대로 통과.
-- [ ] **Step 5: 해당 파일만 commit.** `feat: validate scoped topic relationships and source ranges`.
+- [x] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_source_evidence.py -v`, `python3 -m unittest discover -s tests -p test_validate_changes.py -v` → 새 범위·관계 검사 테스트 실패.
+- [x] **Step 3: 위 인터페이스와 validator 합성 구현.** profile은 artifact의 source head에서, base inventory는 Wiki diff의 seed `base_ref`에서 읽음. 변경한 profiled Topic과 참조된 ID 대상은 새 형식 필요, 무관한 legacy 문서는 일괄 전환하지 않음. 관계는 본문의 실제 상대 링크와 대조. 모든 해당 head 출처를 검사해 유효한 한 경로가 가짜 경로를 숨기지 못하게 함. source 범위 없는 기존 호출의 삭제 근거 규칙은 유지.
+- [x] **Step 4: GREEN·기존 회귀 확인.** `python3 -m unittest discover -s tests -p test_source_evidence.py -v`, `python3 -m unittest discover -s tests -p test_validate_changes.py -v` → 통과. 기존 log byte prefix·source key·허용 경로·도달성·patch 한도 검사는 그대로 통과.
+- [x] **Step 5: 해당 파일만 commit.** `feat: validate scoped topic relationships and source ranges`.
 
 ## Task 4: 분류 설명의 compiler 계약과 검토 자료
 
@@ -153,7 +153,7 @@ def test_accepts_path_deleted_before_last_commit(self):
 - `render_classification(report: dict[str, object]) -> str`: PR·artifact 검토용 Markdown.
 - CLI: `python3 scripts/wiki/classification_report.py --repo . --source-base-ref <sha> --source-key github:<head> --compiler-result <json> --output <classification.json>`. 엔진이 파일 작성.
 
-- [ ] **Step 1: 실패 테스트 작성.** `test_extracts_structured_or_exact_json_result`, `test_rejects_incomplete_even_for_empty_patch`, `test_rejects_wrong_head_or_source_key`, `test_rejects_missing_decision_for_changed_topic`, `test_rejects_unaccounted_changed_source_path`, `test_proposal_cannot_change_existing_topic_boundary`, `test_renders_unknowns_and_unchanged_dependents_as_text` 포함. 실제 LLM 호출 없이 result fixture 사용.
+- [x] **Step 1: 실패 테스트 작성.** `test_extracts_structured_or_exact_json_result`, `test_rejects_incomplete_even_for_empty_patch`, `test_rejects_wrong_head_or_source_key`, `test_rejects_missing_decision_for_changed_topic`, `test_rejects_unaccounted_changed_source_path`, `test_proposal_cannot_change_existing_topic_boundary`, `test_renders_unknowns_and_unchanged_dependents_as_text` 포함. 실제 LLM 호출 없이 result fixture 사용.
 
 ```python
 def test_rejects_incomplete_even_for_empty_patch(self):
@@ -165,11 +165,11 @@ def test_rejects_incomplete_even_for_empty_patch(self):
 ```
 
 `setUp`에 실제 임시 Git source 범위·Demo 프로필·빈 Wiki inventory와 그 범위에 맞는 complete report를 생성. 위 test는 coverage만 바꿈.
-- [ ] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_classification_report.py -v` → 미구현·검사 실패.
-- [ ] **Step 3: 추출·검증·render 구현.** report schema version `1`, source key·head는 호출자가 지정한 trusted 값과 같아야 함. `coverage=complete`만 게시 가능. decision 필드는 승인 spec대로 유지하며 `covered_changes` 경로 배열 추가, 최상위 `ignored_changes`에는 경로·지속 지식이 없는 이유를 기록. Git의 relevant 변경 경로가 둘 중 하나로 설명됐는지 검사. 이것이 업무 의미 전체 검증은 아님을 보고서에 표시.
-- [ ] **Step 4: 프롬프트·Sources 예시 갱신.** 출처 설명은 SHA 다음 들여쓴 줄. 마지막 응답은 구조화 분류 설명이며 runtime 파일은 편집하지 않음. 프로필 없을 때 기존 응답·Wiki-only 흐름 유지. 고정된 최종 head, shared helper의 후처리, 미확인 범위, Topic 생성 이유를 지침에 반영.
-- [ ] **Step 5: GREEN 확인.** 같은 Task 4 명령 → 모든 테스트 통과.
-- [ ] **Step 6: 해당 파일만 commit.** `feat: record reviewable wiki classification decisions`.
+- [x] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_classification_report.py -v` → 미구현·검사 실패.
+- [x] **Step 3: 추출·검증·render 구현.** report schema version `1`, source key·head는 호출자가 지정한 trusted 값과 같아야 함. `coverage=complete`만 게시 가능. decision 필드는 승인 spec대로 유지하며 `covered_changes` 경로 배열 추가, 최상위 `ignored_changes`에는 경로·지속 지식이 없는 이유를 기록. Git의 relevant 변경 경로가 둘 중 하나로 설명됐는지 검사. 이것이 업무 의미 전체 검증은 아님을 보고서에 표시.
+- [x] **Step 4: 프롬프트·Sources 예시 갱신.** 출처 설명은 SHA 다음 들여쓴 줄. 마지막 응답은 구조화 분류 설명이며 runtime 파일은 편집하지 않음. 프로필 없을 때 기존 응답·Wiki-only 흐름 유지. 고정된 최종 head, shared helper의 후처리, 미확인 범위, Topic 생성 이유를 지침에 반영.
+- [x] **Step 5: GREEN 확인.** 같은 Task 4 명령 → 모든 테스트 통과.
+- [x] **Step 6: 해당 파일만 commit.** `feat: record reviewable wiki classification decisions`.
 
 ## Task 5: artifact와 게시 직전 재검증
 
@@ -181,7 +181,7 @@ def test_rejects_incomplete_even_for_empty_patch(self):
 - `create_patch.sh <diff-base-ref> <patch-path> <metadata-path> [source-head-ref] [source-base-ref] [classification-path]`: 앞의 기존 호출 유지. 기존 네 번째 인자의 실제 compiled head 의미 유지.
 - `publish_pr.sh <patch-path> <metadata-path> <base-branch> <wiki-branch> <source-key> [classification-path]`: v2에서는 env `SOURCE_BASE_SHA`도 필수, v1 기존 호출 유지.
 
-- [ ] **Step 1: 실패 테스트 작성.** `test_v1_manifest_remains_compatible`, `test_v2_binds_classification_checksum_and_source_range`, `test_rejects_tampered_report_before_branch_mutation`, `test_incomplete_empty_patch_does_not_persist_cursor`, `test_revalidates_profile_from_compiled_head_when_main_advances`, `test_pr_body_includes_decisions_and_unknowns` 포함. publisher 테스트는 기존 fake gh·로컬 bare remote 사용. 실패 시 remote OID, cursor, PR 호출 수가 변하지 않았다고 assert.
+- [x] **Step 1: 실패 테스트 작성.** `test_v1_manifest_remains_compatible`, `test_v2_binds_classification_checksum_and_source_range`, `test_rejects_tampered_report_before_branch_mutation`, `test_incomplete_empty_patch_does_not_persist_cursor`, `test_revalidates_profile_from_compiled_head_when_main_advances`, `test_pr_body_includes_decisions_and_unknowns` 포함. publisher 테스트는 기존 fake gh·로컬 bare remote 사용. 실패 시 remote OID, cursor, PR 호출 수가 변하지 않았다고 assert.
 
 ```python
 def test_v2_binds_classification_checksum_and_source_range(self):
@@ -195,11 +195,11 @@ def test_v2_binds_classification_checksum_and_source_range(self):
 ```
 
 manifest 순수 함수는 bytes 일치 검사를 담당. report의 의미·전체 계약 검사는 Task 4와 publisher에서 별도 수행.
-- [ ] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_artifact_manifest.py -v`, Ubuntu에서 `python3 -m unittest discover -s tests -p test_ingest_pipeline.py -v` → 새 artifact·publisher 기능 실패.
-- [ ] **Step 3: manifest·shell 계약 구현.** source head에 프로필이 없으면 v1의 exact key 집합 유지. 프로필이 있으면 v2이며 source base를 명시하지 않은 생성 호출은 오류. v2는 기존 필드와 `source_base_sha`, `source_head_sha`, `source_status`, `classification_sha256` 추가. source status는 `ready`, `no_changes`, `docs_wiki_only`; `ready`면 classification 필수, skip이면 report hash는 `null`이고 Wiki patch는 비어야 함. source status는 trusted Git 범위로 재계산. source head는 source key와, source base는 trusted `SOURCE_BASE_SHA`와 일치. checksum은 bytes 기준.
-- [ ] **Step 4: Workflow 연결 구현.** context 단계에서 compiler 실행 전에 실제 base/head를 step output으로 고정해 publish job까지 전달. 원본 context를 compiler 뒤에 신뢰해서 SHA를 다시 정하지 않음. pristine validation에서 같은 bound source 범위·결과를 검증하고 artifact로 함께 전달. trusted publisher 디렉터리에 새 Python 모듈 전체를 복사. 프로필이 켜진 `ready` 입력의 v1 artifact downgrade는 거부. profile·검증 코드·PR 본문은 artifact의 실행 코드에서 가져오지 않음.
-- [ ] **Step 5: GREEN·publisher 회귀 확인.** 앞의 Task 5 명령 모두 통과. 기존 미병합 PR 누적·unmanaged branch 거부·seed hash 불일치·empty cursor·main 전진 테스트도 통과. PR body는 body-file로 생성하며 runtime의 텍스트를 shell 명령으로 해석하지 않음.
-- [ ] **Step 6: 해당 파일만 commit.** `feat: publish verified wiki classification artifacts`.
+- [x] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_artifact_manifest.py -v`, Ubuntu에서 `python3 -m unittest discover -s tests -p test_ingest_pipeline.py -v` → 새 artifact·publisher 기능 실패.
+- [x] **Step 3: manifest·shell 계약 구현.** source head에 프로필이 없으면 v1의 exact key 집합 유지. 프로필이 있으면 v2이며 source base를 명시하지 않은 생성 호출은 오류. v2는 기존 필드와 `source_base_sha`, `source_head_sha`, `source_status`, `classification_sha256` 추가. source status는 `ready`, `no_changes`, `docs_wiki_only`; `ready`면 classification 필수, skip이면 report hash는 `null`이고 Wiki patch는 비어야 함. source status는 trusted Git 범위로 재계산. source head는 source key와, source base는 trusted `SOURCE_BASE_SHA`와 일치. checksum은 bytes 기준.
+- [x] **Step 4: Workflow 연결 구현.** context 단계에서 compiler 실행 전에 실제 base/head를 step output으로 고정해 publish job까지 전달. 원본 context를 compiler 뒤에 신뢰해서 SHA를 다시 정하지 않음. pristine validation에서 같은 bound source 범위·결과를 검증하고 artifact로 함께 전달. trusted publisher 디렉터리에 새 Python 모듈 전체를 복사. 프로필이 켜진 `ready` 입력의 v1 artifact downgrade는 거부. profile·검증 코드·PR 본문은 artifact의 실행 코드에서 가져오지 않음.
+- [x] **Step 5: GREEN·publisher 회귀 확인.** 앞의 Task 5 명령 모두 통과. 기존 미병합 PR 누적·unmanaged branch 거부·seed hash 불일치·empty cursor·main 전진 테스트도 통과. PR body는 body-file로 생성하며 runtime의 텍스트를 shell 명령으로 해석하지 않음.
+- [x] **Step 6: 해당 파일만 commit.** `feat: publish verified wiki classification artifacts`.
 
 ## Task 6: 합성 회귀 자료·사용 문서·전체 검증
 
@@ -207,7 +207,7 @@ manifest 순수 함수는 bytes 일치 검사를 담당. report의 의미·전�
 
 **Interfaces:** 기존 compiler fake를 Task 4 계약으로 확장. `cases.json` schema version `1`, 사례별 id·설명·기대 Topic·금지 범위 확장·필수 근거·허용 대안을 담음. 실제 비공개 코드·회사 정책 없음.
 
-- [ ] **Step 1: 12개 사례와 실패 테스트 작성.** spec의 공통 조건·랭킹 예외·같은 helper 다른 후처리·서비스 차이·연속 변경/원복·모듈 계약·이동·삭제·외부 설정 미확인·기존 후보·실패 재시도·legacy 전환을 각각 식별. `test_profiled_batch_pipeline_uses_final_head_and_accumulates_pending_wiki`, `test_profiled_no_durable_change_requires_complete_report`, `test_profile_change_is_not_trusted_from_compiler_worktree` 포함. 범위 결정은 fake의 기대 입력·출력으로 계약을 검사하며 이를 LLM 의미 정확도 평가로 주장하지 않음.
+- [x] **Step 1: 12개 사례와 실패 테스트 작성.** spec의 공통 조건·랭킹 예외·같은 helper 다른 후처리·서비스 차이·연속 변경/원복·모듈 계약·이동·삭제·외부 설정 미확인·기존 후보·실패 재시도·legacy 전환을 각각 식별. `test_profiled_batch_pipeline_uses_final_head_and_accumulates_pending_wiki`, `test_profiled_no_durable_change_requires_complete_report`, `test_profile_change_is_not_trusted_from_compiler_worktree` 포함. 범위 결정은 fake의 기대 입력·출력으로 계약을 검사하며 이를 LLM 의미 정확도 평가로 주장하지 않음.
 
 ```python
 def test_profiled_batch_pipeline_uses_final_head_and_accumulates_pending_wiki(self):
@@ -221,9 +221,9 @@ def test_profiled_batch_pipeline_uses_final_head_and_accumulates_pending_wiki(se
 ```
 
 `compile_and_publish_fake_batch(self) -> dict[str, object]`는 이 test 파일의 helper: 승인 예제의 C1~C4 합성 commit, 기존 pending Wiki seed, fake compiler·fake gh로 실제 엔진을 호출. 반환 필드는 `report` 객체, `head_sha` 문자열, `managed_cursor` 문자열, `pending_pr_count` 정수, `wiki` 문서명→본문 map, 진단용 `calls` 배열. Wiki 본문과 report는 fake 결과이며 실제 LLM 판단으로 표시하지 않음.
-- [ ] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_domain_pipeline.py -v` → 필요한 연결 또는 fixture가 없으면 실패.
-- [ ] **Step 3: fixture·설치·복구 문서 반영.** 예제 프로필 선택·Git에 기록하는 방법, metadata 없는 문서 전환, 보고서·미확인 상태 해석, validator CLI, retired 처리 안내. 부분 문서화를 전체 서비스 설명으로 표시하지 않음. 실제 실행기 연결과 12개 사례의 사람 의미 평가 결과는 미측정으로 명시. API 키 없는 로컬 검사·CI를 실사용 LLM 생성과 구분.
-- [ ] **Step 4: 전체 검증.** Ubuntu 환경에서 아래 명령 모두 exit 0. 현재 Windows에는 Linux 배포판·shellcheck·Go를 확인하지 못했으므로 shell·publisher 전체 검증은 Ubuntu CI 또는 준비된 Linux 환경에서 수행. 일부 Python 검사만 실행하고 전체 통과로 보고하지 않음.
+- [x] **Step 2: RED 확인.** `python3 -m unittest discover -s tests -p test_domain_pipeline.py -v` → 필요한 연결 또는 fixture가 없으면 실패.
+- [x] **Step 3: fixture·설치·복구 문서 반영.** 예제 프로필 선택·Git에 기록하는 방법, metadata 없는 문서 전환, 보고서·미확인 상태 해석, validator CLI, retired 처리 안내. 부분 문서화를 전체 서비스 설명으로 표시하지 않음. 실제 실행기 연결과 12개 사례의 사람 의미 평가 결과는 미측정으로 명시. API 키 없는 로컬 검사·CI를 실사용 LLM 생성과 구분.
+- [x] **Step 4: 전체 검증.** Ubuntu 환경에서 아래 명령 모두 exit 0. 현재 Windows에는 Linux 배포판·shellcheck·Go를 확인하지 못했으므로 shell·publisher 전체 검증은 Ubuntu CI 또는 준비된 Linux 환경에서 수행. 일부 Python 검사만 실행하고 전체 통과로 보고하지 않음.
 
 ```bash
 python3 -m unittest discover -s tests -v
@@ -233,18 +233,18 @@ go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.9
 git diff --check 77c550e...HEAD
 ```
 
-- [ ] **Step 5: 검증 결과·한계 기록.** 초기 자료에서 사람이 확인할 의미 항목은 `acceptance.md`에 남김. 실제 모델 실행 없이 품질 수치·정책 정확도를 주장하지 않음.
-- [ ] **Step 6: 해당 파일만 commit.** `test: cover domain-aware wiki ingestion and document its limits`.
+- [x] **Step 5: 검증 결과·한계 기록.** 초기 자료에서 사람이 확인할 의미 항목은 `acceptance.md`에 남김. 실제 모델 실행 없이 품질 수치·정책 정확도를 주장하지 않음.
+- [x] **Step 6: 해당 파일만 commit.** `test: cover domain-aware wiki ingestion and document its limits`.
 
 ## 구현 완료와 전달
 
-- [ ] 승인된 spec의 문서 계약·단계·실패 처리마다 구현 task와 테스트를 대응 확인.
-- [ ] 전체 branch를 새 시각으로 검토하고 발견한 문제 수정. 직접 구현 방식을 선택하면 마지막에 독립 reviewer 한 명, 분담 방식을 선택하면 task별 구현·검토와 전체 검토.
-- [ ] 실제 실행한 검증·하지 못한 실제 LLM 평가·후속 adapter/schedule 범위를 구분해 결과 보고.
-- [ ] GitHub 인증과 소유 저장소를 확인한 뒤 feature branch와 검토 PR로 전달. 자동 merge와 Workflow 활성화는 수행하지 않음. 생성한 PR은 Codex task에 연결.
+- [x] 승인된 spec의 문서 계약·단계·실패 처리마다 구현 task와 테스트를 대응 확인.
+- [x] 전체 branch를 새 시각으로 검토하고 발견한 문제 수정. 직접 구현 방식을 선택하면 마지막에 독립 reviewer 한 명, 분담 방식을 선택하면 task별 구현·검토와 전체 검토.
+- [x] 실제 실행한 검증·하지 못한 실제 LLM 평가·후속 adapter/schedule 범위를 구분해 결과 보고.
+- [x] GitHub 인증과 소유 저장소를 확인한 뒤 feature branch와 검토 PR로 전달. 자동 merge와 Workflow 활성화는 수행하지 않음. 생성한 PR은 Codex task에 연결.
 
 ## 계획 검토 상태
 
 자체 검토: 프로필 없는 호환 흐름, legacy의 점진 전환, 안정 ID·경로, source 범위, report의 빈 patch 처리, publish 직전 이중 검사, PR body, 합성 평가·의미 평가 구분을 각 task에 배치. 일별 schedule과 key-free 실행기 adapter는 다음 별도 계획으로 유지.
 
-사용자가 설계·계획과 직접 구현 후 독립 전체 검토 방식을 승인. Tasks 1~5 구현·검사 완료, Task 6의 합성 pipeline·문서 구현 후 전체 검증 진행 중. 실행기 adapter·일별 schedule은 이 계획의 후속 단위.
+사용자가 설계·계획과 직접 구현 후 독립 전체 검토 방식을 승인. Tasks 1~6 구현·검사 완료. 독립 전체 검토의 Important 두 건은 실패 재현 후 수정했고, Windows 보조 실행에서 총 115개 중 112개 통과·권한 관련 3개 생략. Ubuntu CI는 Task 6 커밋에서 전체 필수 단계 통과했으며 최종 수정 커밋의 결과는 PR #3의 Checks에서 확인. 실행기 adapter·일별 schedule은 이 계획의 후속 단위.

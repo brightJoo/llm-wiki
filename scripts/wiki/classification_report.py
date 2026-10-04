@@ -49,7 +49,7 @@ def extract_classification(compiler_result: dict[str, object]) -> dict[str, obje
 
 
 def validate_classification(report: dict[str, object], repo: Path, source_base_ref: str, source_key: str, inventory: list[dict[str, object]], profile: dict[str, object], changed_topic_paths: set[str], base_inventory: Optional[list[dict[str, object]]] = None) -> list[ContractIssue]:
-    """Check input accounting and declared scope; semantic equivalence still needs review."""
+    """Check accounting, scope and seeded/final causal impact; semantics need human review."""
     path = 'classification.json'
     if not isinstance(report, dict) or set(report) != REPORT_FIELDS or type(report.get('schema_version')) is not int or report['schema_version'] != 1:
         return [ContractIssue('invalid_classification_schema', path, 'expected exact v1 report fields')]
@@ -72,6 +72,7 @@ def validate_classification(report: dict[str, object], repo: Path, source_base_r
     candidates = set(current) | {record['path'] for record in inventory}
     candidates |= {record['metadata']['id'] for record in (base_inventory or []) if isinstance(record.get('metadata'), dict) and _text(record['metadata'].get('id'))}
     reverse = build_reverse_relations(inventory)
+    seeded_reverse = build_reverse_relations(base_inventory or [])
     explained_paths, seen = set(), set()
     for decision in report['decisions']:
         if not isinstance(decision, dict) or set(decision) != DECISION_FIELDS:
@@ -136,7 +137,8 @@ def validate_classification(report: dict[str, object], repo: Path, source_base_r
                 elif (dependent['path'] in changed_topic_paths) != (entry['action'] != 'unchanged'):
                     issues.append(ContractIssue('invalid_checked_dependents', path, 'dependent action must match actual edit status'))
                 checked.add(entry['topic_id'])
-            required = {edge['source'] for edge in reverse.get(topic_id, []) if edge['type'] != 'related_to'} if action in ('update', 'retire') else set()
+            affected_edges = reverse.get(topic_id, []) + seeded_reverse.get(topic_id, [])
+            required = {edge['source'] for edge in affected_edges if edge['type'] != 'related_to'} if action in ('update', 'retire') else set()
             if required - checked:
                 issues.append(ContractIssue('unchecked_dependent', path, 'incoming policy/module dependents need an explicit check result'))
     for entry in report['ignored_changes']:

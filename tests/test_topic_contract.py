@@ -82,6 +82,14 @@ class TopicContractTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             parse_topic_metadata("## Topic metadata\n\n```json\n{}\n```\n```json\n{}\n```\n", "ranking.md")
 
+    def test_nested_json_example_cannot_supply_topic_metadata(self):
+        """Only a top-level JSON fence may define metadata beneath its real heading."""
+        example = '````markdown\n```json\n' + json.dumps(topic_metadata('example.id')) + '\n```\n````\n'
+        with self.assertRaises(ContractError):
+            parse_topic_metadata('## Topic metadata\n\n' + example, 'example.md')
+        real = '```json\n' + json.dumps(topic_metadata('actual.id')) + '\n```\n'
+        self.assertEqual(parse_topic_metadata('## Topic metadata\n\n' + example + real, 'actual.md')['id'], 'actual.id')
+
     def test_legacy_topic_without_metadata(self):
         """A legacy document is distinct from a malformed metadata section."""
         self.assertIsNone(parse_topic_metadata("# Legacy\n\n## Scope\n\nSearch.\n", "legacy.md"))

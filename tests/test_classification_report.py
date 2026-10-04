@@ -110,6 +110,23 @@ class ClassificationReportTests(source_fixture.SourceEvidenceTests):
         self.assertIn('invalid_classification_evidence', self.codes())
         self.assertIn('invalid_scope', self.codes())
 
+    def test_removed_seeded_dependency_still_requires_impact_explanation(self):
+        """Removing a causal edge cannot hide a dependent from the target's review."""
+        target_decision = self.add_decision('update')
+        target = self.inventory[0]
+        dependent_meta = topic_metadata('dependent')
+        dependent = {'path': 'docs/wiki/topics/dependent.md', 'metadata': dependent_meta, 'links': []}
+        self.inventory.append(dependent)
+        self.changed.add(dependent['path'])
+        self.base_inventory = copy.deepcopy(self.inventory)
+        self.base_inventory[1]['metadata']['relations'] = [{'type': 'depends_on', 'target': target['metadata']['id']}]
+        dependent_decision = copy.deepcopy(target_decision)
+        dependent_decision.update(topic_id='dependent', question=dependent_meta['question'], scope=dependent_meta['scope'])
+        self.report['decisions'].append(dependent_decision)
+        self.assertIn('unchecked_dependent', self.codes())
+        target_decision['checked_dependents'] = [{'topic_id': 'dependent', 'action': 'update', 'reason': 'Removed dependency because the caller contract changed.'}]
+        self.assertEqual(self.codes(), set())
+
     def test_renders_unknowns_and_unchanged_dependents_as_text(self):
         """Review text carries uncertainty and reasons without executing special strings."""
         d = self.add_decision()

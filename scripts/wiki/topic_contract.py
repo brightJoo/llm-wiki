@@ -170,13 +170,29 @@ def plain_markdown(content: str) -> str:
 
 
 def parse_topic_metadata(content: str, path: str) -> Optional[dict[str, object]]:
-    """Parse one real JSON metadata block, retaining unconverted legacy Topics."""
+    """Parse one top-level JSON fence; nested examples cannot define Topic metadata."""
     sections = markdown_sections(content).get("Topic metadata", [])
     if not sections:
         return None
     if len(sections) != 1:
         raise ContractError(f"{path}: duplicate Topic metadata sections")
-    blocks = re.findall(r"(?ms)^ {0,3}```json[ \t]*\r?\n(.*?)^ {0,3}```[ \t]*\r?$", sections[0])
+    blocks, body, fence, capture = [], [], None, False
+    for line in sections[0].splitlines(keepends=True):
+        marker = FENCE.match(line.rstrip('\r\n'))
+        if marker:
+            token, tail = marker.groups()
+            if fence is None:
+                fence = (token[0], len(token))
+                capture = token[0] == '`' and tail.strip() == 'json'
+                body = []
+                continue
+            if token[0] == fence[0] and len(token) >= fence[1] and not tail.strip():
+                if capture:
+                    blocks.append(''.join(body))
+                fence, capture = None, False
+                continue
+        if capture:
+            body.append(line)
     if len(blocks) != 1:
         raise ContractError(f"{path}: expected one JSON metadata block")
     return load_json(blocks[0], path)

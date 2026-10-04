@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "dataset": "synthetic-demo-shop",
+  "semantic_evaluation": "not_run",
+  "cases": [
+    {"id": "shared-condition", "description": "공통 노출 조건 변경", "expected_topics": ["대표 정책", "실제 적용 화면 검토"], "forbidden_scope_expansion": ["화면마다 정책 복제", "미확인 화면에 적용 확대"], "required_evidence": ["입력·조건·결과", "호출 경로와 전후 필터"], "acceptable_alternatives": ["같은 질문·범위의 기존 정책 갱신"]},
+    {"id": "ranking-exception", "description": "랭킹 전용 품절 조건", "expected_topics": ["랭킹 조건·예외"], "forbidden_scope_expansion": ["홈에 랭킹 예외 적용"], "required_evidence": ["랭킹 분기", "기본 제외와 처리 순서"], "acceptable_alternatives": ["정책 조건표", "독립 정책과 exception_of"]},
+    {"id": "caller-postprocessing", "description": "같은 helper 뒤 다른 필터", "expected_topics": ["공유 helper", "화면별 후처리"], "forbidden_scope_expansion": ["최종 결과까지 동일하다고 단정"], "required_evidence": ["각 호출자 후처리", "helper 반환 계약"], "acceptable_alternatives": ["모듈 계약과 화면 설명 분리"]},
+    {"id": "service-boundary", "description": "두 합성 서비스의 같은 명칭", "expected_topics": ["서비스별 질문·범위"], "forbidden_scope_expansion": ["명칭만으로 정책 병합"], "required_evidence": ["서비스별 실행 경로와 결과"], "acceptable_alternatives": ["별도 Topic과 related_to"]},
+    {"id": "final-head-reversal", "description": "C1~C4 연속 변경·이동·원복", "expected_topics": ["최종 제외 정책", "최종 7일 예외"], "forbidden_scope_expansion": ["중간 3일을 현재 동작으로 기록"], "required_evidence": ["최종 head 코드", "원복 이력"], "acceptable_alternatives": ["현재 7일 유지, 변화 맥락은 검토 설명"]},
+    {"id": "module-contract", "description": "상품 카드 계약 변경", "expected_topics": ["카드 모듈", "영향 화면 검토"], "forbidden_scope_expansion": ["필드마다 업무 정책 생성"], "required_evidence": ["반환 타입과 소비자"], "acceptable_alternatives": ["기존 모듈 계약에 조건 추가"]},
+    {"id": "source-rename", "description": "클래스·경로 이동", "expected_topics": ["기존 ID·경로의 Topic"], "forbidden_scope_expansion": ["이름 변경을 새 정책으로 취급"], "required_evidence": ["이전 근거 후보", "최종 경로·동작 유지"], "acceptable_alternatives": ["기존 근거 갱신과 이전 이름 안내"]},
+    {"id": "feature-retirement", "description": "기능 삭제·대체", "expected_topics": ["기존 Topic retired"], "forbidden_scope_expansion": ["파일 하나 삭제로 전체 폐기", "과거 링크 삭제"], "required_evidence": ["범위 내 삭제", "남은 호출자와 대체"], "acceptable_alternatives": ["기존 경로 안내 문서로 보존"]},
+    {"id": "unknown-external-config", "description": "외부 플래그·설정 미확인", "expected_topics": ["확인한 범위", "미확인 Verification"], "forbidden_scope_expansion": ["운영에서도 항상 동일", "null을 전체 적용으로 해석"], "required_evidence": ["코드 기본값과 설정 경계"], "acceptable_alternatives": ["scope null과 unknowns", "좁은 확인 범위만 기록"]},
+    {"id": "existing-candidate", "description": "기존 문서 존재", "expected_topics": ["기존 Topic 우선"], "forbidden_scope_expansion": ["검색 없이 신규 생성"], "required_evidence": ["기존 질문·범위·출처 대조"], "acceptable_alternatives": ["독립 질문을 입증한 신규 생성과 이유"]},
+    {"id": "retry-after-failure", "description": "불완전 입력·검증·저장 실패", "expected_topics": ["cursor 유지·재시도"], "forbidden_scope_expansion": ["빈 patch를 무조건 완료 처리"], "required_evidence": ["실패 전후 remote cursor·PR 쓰기 횟수"], "acceptable_alternatives": ["입력 확인 후 complete 무변경 보고서"]},
+    {"id": "gradual-legacy", "description": "메타데이터 없는 기존 Wiki", "expected_topics": ["관련 문서만 전환"], "forbidden_scope_expansion": ["legacy 검색 제외", "전체 Wiki 강제 전환"], "required_evidence": ["기존 Sources·링크", "변경한 Topic metadata"], "acceptable_alternatives": ["무관한 legacy 유지"]}
+  ]
+}

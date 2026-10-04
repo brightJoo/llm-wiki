@@ -148,4 +148,3 @@ class TopicContractTests(unittest.TestCase):
             subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "-qm", "remove profile"], check=True)
             missing_sha = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
             self.assertIsNone(read_domain_profile(repo, missing_sha))
-

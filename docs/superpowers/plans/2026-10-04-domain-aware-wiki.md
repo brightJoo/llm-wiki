@@ -247,4 +247,4 @@ git diff --check 77c550e...HEAD
 
 자체 검토: 프로필 없는 호환 흐름, legacy의 점진 전환, 안정 ID·경로, source 범위, report의 빈 patch 처리, publish 직전 이중 검사, PR body, 합성 평가·의미 평가 구분을 각 task에 배치. 일별 schedule과 key-free 실행기 adapter는 다음 별도 계획으로 유지.
 
-사람의 계획 검토·실행 방식 선택 전. product code 변경 없음. 추천 실행 방식은 이 세션에서 직접 구현 후 독립 전체 검토: 여섯 task가 같은 metadata·report·artifact 인터페이스에 이어져 일관된 구현이 유리.
+사용자가 설계·계획과 직접 구현 후 독립 전체 검토 방식을 승인. Tasks 1~5 구현·검사 완료, Task 6의 합성 pipeline·문서 구현 후 전체 검증 진행 중. 실행기 adapter·일별 schedule은 이 계획의 후속 단위.

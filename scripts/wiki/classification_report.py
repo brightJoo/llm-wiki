@@ -178,13 +178,19 @@ def main(argv=None) -> int:
     """Extract and validate with trusted bounds before the engine writes the artifact."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--repo', type=Path, default=Path('.'))
-    parser.add_argument('--source-base-ref', required=True)
-    parser.add_argument('--source-key', required=True)
+    parser.add_argument('--source-base-ref')
+    parser.add_argument('--source-key')
     parser.add_argument('--wiki-base-ref', default='HEAD')
-    parser.add_argument('--compiler-result', type=Path, required=True)
-    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--compiler-result', type=Path)
+    parser.add_argument('--output', type=Path)
+    parser.add_argument('--render-report', type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.render_report is not None:
+            print(render_classification(load_json(args.render_report.read_text(encoding='utf-8'), str(args.render_report))), end='')
+            return 0
+        if not all((args.source_base_ref, args.source_key, args.compiler_result, args.output)):
+            raise ContractError('extraction requires source base/key, compiler result and output')
         if __package__:
             from .validate_changes import _changes
         else:

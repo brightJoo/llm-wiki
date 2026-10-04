@@ -28,6 +28,9 @@ jobs:
       contents: read
     outputs:
       ready: ${{ steps.context.outputs.publish }}
+      source_base_sha: ${{ steps.context.outputs.source_base_sha }}
+      source_head_sha: ${{ steps.context.outputs.source_head_sha }}
+      source_key: ${{ steps.context.outputs.source_key }}
     steps:
       - name: Check out main history
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -73,6 +76,13 @@ jobs:
             --max-diff-bytes 1000000 \
             "${pending_args[@]}" >/dev/null
           status=$(python3 -c 'import json; print(json.load(open(".llm-wiki/runtime/context.json"))["status"])')
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          context = json.load(open(".llm-wiki/runtime/context.json", encoding="utf-8"))
+          for output, key in (("source_base_sha", "base_sha"), ("source_head_sha", "head_sha"), ("source_key", "source_key")):
+              print(f"{output}={context[key]}")
+          print("profiled=" + str("domain_profile" in context).lower())
+          PY
           if [[ "$status" == "ready" ]]; then
             echo "compile=true" >> "$GITHUB_OUTPUT"
             echo "publish=true" >> "$GITHUB_OUTPUT"
@@ -174,41 +184,59 @@ jobs:
         shell: bash
         env:
           SEED_REF: ${{ steps.validation-seed.outputs.ref }}
+          SOURCE_BASE_SHA: ${{ steps.context.outputs.source_base_sha }}
+          SOURCE_KEY: ${{ steps.context.outputs.source_key }}
+          PROFILED: ${{ steps.context.outputs.profiled }}
+          COMPILE: ${{ steps.context.outputs.compile }}
         run: |
           set -euo pipefail
-          source_key=$(python3 -c 'import json; print(json.load(open(".llm-wiki/runtime/context.json"))["source_key"])')
+          artifact_dir="$RUNNER_TEMP/llm-wiki-artifact"
+          mkdir -p "$artifact_dir"
+          report_args=()
+          if [[ "$PROFILED" == 'true' && "$COMPILE" == 'true' ]]; then
+            python3 .llm-wiki-validation/scripts/wiki/classification_report.py \
+              --repo .llm-wiki-validation --source-base-ref "$SOURCE_BASE_SHA" \
+              --source-key "$SOURCE_KEY" --wiki-base-ref "$SEED_REF" \
+              --compiler-result .llm-wiki/runtime/claude-result.json \
+              --output "$artifact_dir/classification.json"
+            report_args+=(--classification-report "$artifact_dir/classification.json")
+          fi
           python3 .llm-wiki-validation/scripts/wiki/validate_changes.py \
             --repo .llm-wiki-validation \
             --base-ref "$SEED_REF" \
-            --source-key "$source_key" \
+            --source-key "$SOURCE_KEY" --source-base-ref "$SOURCE_BASE_SHA" \
             --max-files 30 \
             --max-patch-bytes 500000 \
-            --report .llm-wiki/runtime/validation.json
-          changed=$(python3 -c 'import json; print(str(json.load(open(".llm-wiki/runtime/validation.json"))["changed"]).lower())')
+            --report "$artifact_dir/validation.json" "${report_args[@]}"
+          changed=$(python3 -c 'import json, os; print(str(json.load(open(os.environ["RUNNER_TEMP"] + "/llm-wiki-artifact/validation.json"))["changed"]).lower())')
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
 
       - name: Create incremental Wiki patch artifact
         if: steps.context.outputs.publish == 'true'
         env:
-          EVENT_HEAD_SHA: ${{ github.sha }}
+          SOURCE_HEAD_SHA: ${{ steps.context.outputs.source_head_sha }}
+          SOURCE_BASE_SHA: ${{ steps.context.outputs.source_base_sha }}
           SEED_REF: ${{ steps.validation-seed.outputs.ref }}
         run: |
+          set -euo pipefail
+          artifact_dir="$RUNNER_TEMP/llm-wiki-artifact"
+          report_args=()
+          if [[ -f "$artifact_dir/classification.json" ]]; then
+            report_args+=("$artifact_dir/classification.json")
+          fi
           cd .llm-wiki-validation
           scripts/wiki/create_patch.sh \
             "$SEED_REF" \
-            "$GITHUB_WORKSPACE/.llm-wiki/runtime/wiki.patch" \
-            "$GITHUB_WORKSPACE/.llm-wiki/runtime/patch-metadata.json" \
-            "$EVENT_HEAD_SHA"
+            "$artifact_dir/wiki.patch" \
+            "$artifact_dir/patch-metadata.json" \
+            "$SOURCE_HEAD_SHA" "$SOURCE_BASE_SHA" "${report_args[@]}"
 
       - name: Upload validated patch
         if: steps.context.outputs.publish == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llm-wiki-patch-${{ github.run_id }}
-          path: |
-            .llm-wiki/runtime/wiki.patch
-            .llm-wiki/runtime/patch-metadata.json
-            .llm-wiki/runtime/validation.json
+          path: ${{ runner.temp }}/llm-wiki-artifact/
           if-no-files-found: error
           retention-days: 1
 
@@ -247,22 +275,27 @@ jobs:
           engine_dir="$RUNNER_TEMP/llm-wiki-engine"
           mkdir -p "$engine_dir"
           cp scripts/wiki/publish_pr.sh "$engine_dir/publish_pr.sh"
-          cp scripts/wiki/prepare_context.py "$engine_dir/prepare_context.py"
-          cp scripts/wiki/validate_changes.py "$engine_dir/validate_changes.py"
+          cp scripts/wiki/*.py "$engine_dir/"
           echo "dir=$engine_dir" >> "$GITHUB_OUTPUT"
 
       - name: Revalidate and publish Wiki PR
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_KEY: github:${{ github.sha }}
+          SOURCE_KEY: ${{ needs.ingest.outputs.source_key }}
+          SOURCE_BASE_SHA: ${{ needs.ingest.outputs.source_base_sha }}
           ARTIFACT_DIR: ${{ runner.temp }}/llm-wiki-artifact
           ENGINE_DIR: ${{ steps.engine.outputs.dir }}
           WIKI_VALIDATOR: ${{ steps.engine.outputs.dir }}/validate_changes.py
           WIKI_CONTEXT_PREPARER: ${{ steps.engine.outputs.dir }}/prepare_context.py
         run: |
+          set -euo pipefail
+          report_args=()
+          if [[ -f "$ARTIFACT_DIR/classification.json" ]]; then
+            report_args+=("$ARTIFACT_DIR/classification.json")
+          fi
           "$ENGINE_DIR/publish_pr.sh" \
             "$ARTIFACT_DIR/wiki.patch" \
             "$ARTIFACT_DIR/patch-metadata.json" \
             main \
             wiki/pending \
-            "$SOURCE_KEY"
+            "$SOURCE_KEY" "${report_args[@]}"

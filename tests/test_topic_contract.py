@@ -88,6 +88,11 @@ class TopicContractTests(unittest.TestCase):
         with self.assertRaises(ContractError):
             parse_topic_metadata("## Topic metadata\n\nnot json\n", "broken.md")
 
+    def test_metadata_accepts_windows_line_endings(self):
+        """Valid CRLF documents parse identically to LF Markdown."""
+        document = metadata_document(topic_metadata()).replace("\n", "\r\n")
+        self.assertEqual(parse_topic_metadata(document, "ranking.md")["id"], "display.screen.ranking")
+
     def test_rejects_unknown_scope_and_empty_array(self):
         """Undeclared and empty scopes cannot imply broad applicability."""
         for value in ([], ["unknown"], "ranking", ["ranking", "ranking"]):

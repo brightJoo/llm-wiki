@@ -176,7 +176,7 @@ def parse_topic_metadata(content: str, path: str) -> Optional[dict[str, object]]
         return None
     if len(sections) != 1:
         raise ContractError(f"{path}: duplicate Topic metadata sections")
-    blocks = re.findall(r"(?ms)^ {0,3}```json[ \t]*\r?\n(.*?)^ {0,3}```[ \t]*$", sections[0])
+    blocks = re.findall(r"(?ms)^ {0,3}```json[ \t]*\r?\n(.*?)^ {0,3}```[ \t]*\r?$", sections[0])
     if len(blocks) != 1:
         raise ContractError(f"{path}: expected one JSON metadata block")
     return load_json(blocks[0], path)

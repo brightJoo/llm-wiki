@@ -271,10 +271,11 @@ def validate(
     changes = _changes(repo, base_ref)
     if source_base_ref is not None:
         validate_source_range(repo, source_base_ref, head_sha)
-    if not changes:
-        return issues
     incremental_ref = incremental_base_ref or base_ref
     incremental_changes = _changes(repo, incremental_ref)
+    issues.extend(_domain_issues(repo, incremental_ref, head_sha, source_key, incremental_changes, source_base_ref, classification_path))
+    if not changes:
+        return issues
 
     if len(changes) > max_files:
         issues.append(
@@ -429,12 +430,35 @@ def validate(
                     "every head source path must exist at head or be removed inside the source range",
                 )
             )
+    return issues
+
+
+def _domain_issues(repo, incremental_ref, head_sha, source_key, incremental_changes, source_base_ref, classification_path):
+    """Validate profiled contracts even when the Wiki patch itself is empty."""
+    issues = []
     try:
         profile = read_domain_profile(repo, head_sha)
         if profile is not None:
             inventory = build_topic_inventory(repo)
             base_inventory = build_topic_inventory(repo, incremental_ref)
             contract_issues = validate_topic_graph(inventory, profile, {item['path'] for item in incremental_changes}, base_inventory)
+            if __package__:
+                from .classification_report import validate_classification
+                from .topic_contract import load_json
+                from .prepare_context import changed_files, _is_wiki_only_change
+            else:
+                from classification_report import validate_classification
+                from topic_contract import load_json
+                from prepare_context import changed_files, _is_wiki_only_change
+            ready = source_base_ref is not None and any(not _is_wiki_only_change(item) for item in changed_files(repo, source_base_ref, head_sha))
+            if classification_path is not None:
+                if source_base_ref is None:
+                    raise ContractError('classification requires a trusted source base')
+                report = load_json(classification_path.read_text(encoding='utf-8'), str(classification_path))
+                changed_topics = {item['path'] for item in incremental_changes if item['path'].startswith('docs/wiki/topics/')}
+                contract_issues.extend(validate_classification(report, repo, source_base_ref, source_key, inventory, profile, changed_topics, base_inventory))
+            elif ready:
+                issues.append(ValidationIssue('missing_classification_report', 'classification.json', 'profiled source changes require a complete report, even for an empty patch'))
             issues.extend(ValidationIssue(item.code, item.path, item.message) for item in contract_issues)
     except ContractError as error:
         issues.append(ValidationIssue('invalid_topic_contract', 'docs/wiki/topics', str(error)))

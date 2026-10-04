@@ -13,6 +13,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import unquote
+if __package__:
+    from .topic_contract import ContractError, read_domain_profile, validate_topic_graph, markdown_sections, plain_markdown
+    from .topic_inventory import build_topic_inventory
+    from .source_evidence import source_path_is_valid, validate_source_range
+else:
+    from topic_contract import ContractError, read_domain_profile, validate_topic_graph, markdown_sections, plain_markdown
+    from topic_inventory import build_topic_inventory
+    from source_evidence import source_path_is_valid, validate_source_range
 
 
 SOURCE_KEY_PATTERN = re.compile(r"^github:([0-9a-f]{40})$")
@@ -234,35 +242,8 @@ def _reachable_topics(repo: Path, graph: Dict[Path, set[Path]]) -> set[Path]:
 
 
 def _valid_source_path(repo: Path, source_sha: str, raw_path: str) -> bool:
-    candidate = Path(raw_path)
-    if candidate.is_absolute() or ".." in candidate.parts or "." in candidate.parts:
-        return False
-    exists = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "-e", f"{source_sha}:{raw_path}"],
-        check=False,
-        capture_output=True,
-    )
-    if exists.returncode == 0:
-        return True
-    changed = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "diff-tree",
-            "--root",
-            "--no-commit-id",
-            "--name-only",
-            "-r",
-            source_sha,
-            "--",
-            raw_path,
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return changed.returncode == 0 and raw_path in changed.stdout.splitlines()
+    """Preserve the legacy helper while using the shared path evidence contract."""
+    return source_path_is_valid(repo, raw_path, source_sha)
 
 
 def validate(
@@ -272,7 +253,11 @@ def validate(
     max_files: int,
     max_patch_bytes: int,
     incremental_base_ref: Optional[str] = None,
+    *,
+    source_base_ref: Optional[str] = None,
+    classification_path: Optional[Path] = None,
 ) -> List[ValidationIssue]:
+    """Validate a proposed Wiki against its seed and a separately bound source range."""
     repo = repo.resolve()
     issues: List[ValidationIssue] = []
     source_match = SOURCE_KEY_PATTERN.fullmatch(source_key)
@@ -284,10 +269,13 @@ def validate(
         ]
     head_sha = source_match.group(1)
     changes = _changes(repo, base_ref)
-    if not changes:
-        return issues
+    if source_base_ref is not None:
+        validate_source_range(repo, source_base_ref, head_sha)
     incremental_ref = incremental_base_ref or base_ref
     incremental_changes = _changes(repo, incremental_ref)
+    issues.extend(_domain_issues(repo, incremental_ref, head_sha, source_key, incremental_changes, source_base_ref, classification_path))
+    if not changes:
+        return issues
 
     if len(changes) > max_files:
         issues.append(
@@ -404,10 +392,8 @@ def validate(
         if not topic_path.is_file():
             continue
         content = topic_path.read_text(encoding="utf-8")
-        sources_match = re.search(
-            r"(?ms)^## Sources\s*$\n(.*?)(?=^##\s|\Z)", content
-        )
-        if sources_match is None:
+        source_sections = markdown_sections(content).get('Sources', [])
+        if len(source_sections) != 1:
             issues.append(
                 ValidationIssue(
                     "missing_sources", path, "changed Topic must contain a Sources section"
@@ -415,7 +401,7 @@ def validate(
             )
             sources = ""
         else:
-            sources = sources_match.group(1)
+            sources = plain_markdown(source_sections[0])
         source_entries = SOURCE_ENTRY_PATTERN.findall(sources)
         head_paths = [path for path, sha in source_entries if sha == head_sha]
         if not head_paths:
@@ -434,25 +420,60 @@ def validate(
                     "changed Topic must cite at least one repository path",
                 )
             )
-        elif head_paths and not any(
-            _valid_source_path(repo, head_sha, path) for path in head_paths
+        elif head_paths and not all(
+            source_path_is_valid(repo, source_path, head_sha, source_base_ref) for source_path in head_paths
         ):
             issues.append(
                 ValidationIssue(
                     "invalid_source_path",
                     path,
-                    "source path must exist at or be changed by the cited commit",
+                    "every head source path must exist at head or be removed inside the source range",
                 )
             )
     return issues
 
 
+def _domain_issues(repo, incremental_ref, head_sha, source_key, incremental_changes, source_base_ref, classification_path):
+    """Validate profiled contracts even when the Wiki patch itself is empty."""
+    issues = []
+    try:
+        profile = read_domain_profile(repo, head_sha)
+        if profile is not None:
+            inventory = build_topic_inventory(repo)
+            base_inventory = build_topic_inventory(repo, incremental_ref)
+            contract_issues = validate_topic_graph(inventory, profile, {item['path'] for item in incremental_changes}, base_inventory)
+            if __package__:
+                from .classification_report import validate_classification
+                from .topic_contract import load_json
+                from .prepare_context import changed_files, _is_wiki_only_change
+            else:
+                from classification_report import validate_classification
+                from topic_contract import load_json
+                from prepare_context import changed_files, _is_wiki_only_change
+            ready = source_base_ref is not None and any(not _is_wiki_only_change(item) for item in changed_files(repo, source_base_ref, head_sha))
+            if classification_path is not None:
+                if source_base_ref is None:
+                    raise ContractError('classification requires a trusted source base')
+                report = load_json(classification_path.read_text(encoding='utf-8'), str(classification_path))
+                changed_topics = {item['path'] for item in incremental_changes if item['path'].startswith('docs/wiki/topics/')}
+                contract_issues.extend(validate_classification(report, repo, source_base_ref, source_key, inventory, profile, changed_topics, base_inventory))
+            elif ready:
+                issues.append(ValidationIssue('missing_classification_report', 'classification.json', 'profiled source changes require a complete report, even for an empty patch'))
+            issues.extend(ValidationIssue(item.code, item.path, item.message) for item in contract_issues)
+    except ContractError as error:
+        issues.append(ValidationIssue('invalid_topic_contract', 'docs/wiki/topics', str(error)))
+    return issues
+
+
 def _parser() -> argparse.ArgumentParser:
+    """Define compatible CLI options plus explicitly bound source/report inputs."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo", type=Path, default=Path("."))
     parser.add_argument("--base-ref", default="HEAD")
     parser.add_argument("--source-key", required=True)
     parser.add_argument("--incremental-base-ref")
+    parser.add_argument("--source-base-ref")
+    parser.add_argument("--classification-report", type=Path)
     parser.add_argument("--max-files", type=int, default=30)
     parser.add_argument("--max-patch-bytes", type=int, default=500_000)
     parser.add_argument("--report", type=Path)
@@ -460,6 +481,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
+    """Write deterministic validation diagnostics and return nonzero for any issue."""
     args = _parser().parse_args(argv)
     try:
         changes = _changes(args.repo.resolve(), args.base_ref)
@@ -470,6 +492,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             args.max_files,
             args.max_patch_bytes,
             args.incremental_base_ref,
+            source_base_ref=args.source_base_ref,
+            classification_path=args.classification_report,
         )
     except (OSError, RuntimeError, UnicodeError) as error:
         print(f"validate-changes: {error}", file=sys.stderr)

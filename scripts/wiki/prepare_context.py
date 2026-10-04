@@ -9,6 +9,12 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+if __package__:
+    from .topic_contract import ContractError, read_domain_profile
+    from .topic_inventory import build_topic_inventory, select_topic_candidates
+else:
+    from topic_contract import ContractError, read_domain_profile
+    from topic_inventory import build_topic_inventory, select_topic_candidates
 from typing import Dict, List, Optional, Sequence
 
 
@@ -305,6 +311,12 @@ def prepare_context(
     max_files: int,
     max_diff_bytes: int,
 ) -> Dict[str, object]:
+    """Write a bounded source batch and optional committed-domain retrieval context.
+
+    base/head must resolve to an ancestral range. File and byte limits bound source
+    input; a committed domain profile activates a bounded inventory of the seeded
+    Wiki. Malformed configuration or unsafe Wiki inputs raise ContextError.
+    """
     repo = repo.resolve()
     output_dir = output_dir.resolve()
     if max_files < 1 or max_diff_bytes < 1:
@@ -381,6 +393,21 @@ def prepare_context(
     }
     if reason:
         context["reason"] = reason
+    try:
+        profile = read_domain_profile(repo, head_sha)
+        if profile is not None:
+            context["domain_profile"] = profile
+            if reason is None:
+                inventory = build_topic_inventory(repo)
+                candidates = select_topic_candidates(inventory, relevant_changes, profile)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                inventory_path = output_dir / "topic-inventory.json"
+                inventory_path.write_text(json.dumps(inventory, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                context["topic_inventory_path"] = str(inventory_path)
+                context["topic_candidates"] = candidates["topics"]
+                context["topic_candidates_truncated"] = candidates["truncated"]
+    except (ContractError, OSError) as error:
+        raise ContextError(str(error)) from error
     _write_context(output_dir, context, diff)
     return context
 

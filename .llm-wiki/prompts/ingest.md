@@ -12,6 +12,8 @@ Follow `CLAUDE.md` exactly. This is an ingest operation, not a general code-edit
 8. Cite the exact runtime `head_sha` in every added or modified Topic's `## Sources` section.
 9. Record implementation-versus-Spec mismatches under `## Drift` without editing `docs/specs/**`.
 10. If no durable, verified knowledge changed, leave the working tree untouched.
+11. If context contains `domain_profile`, follow the domain classification procedure in `CLAUDE.md`: read the inventory (including legacy Topics), compare existing question/scope, inspect caller and postprocessing differences, check incoming dependents, preserve stable IDs/paths, and record unknown scope explicitly.
+12. For profiled runs, finish with the exact classification JSON contract from `CLAUDE.md`, including `covered_changes` and `ignored_changes` for all non-Wiki source paths. Return `coverage=incomplete` when essential input is unread. Even an empty Wiki patch needs a complete explanation. Do not write the report/runtime files yourself; the trusted engine extracts and validates the result.
 
 You may edit only:
 

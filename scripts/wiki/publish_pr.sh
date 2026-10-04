@@ -4,8 +4,8 @@ set -euo pipefail
 managed_marker='<!-- llm-wiki:managed-pr -->'
 managed_commit_marker='LLM-Wiki-Managed: true'
 
-if [[ $# -ne 5 ]]; then
-  echo "usage: publish_pr.sh <patch-path> <metadata-path> <base-branch> <wiki-branch> <source-key>" >&2
+if [[ $# -lt 5 || $# -gt 6 ]]; then
+  echo "usage: publish_pr.sh <patch-path> <metadata-path> <base-branch> <wiki-branch> <source-key> [classification-path]" >&2
   exit 2
 fi
 
@@ -14,6 +14,8 @@ metadata_path=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
 base_branch=$3
 wiki_branch=$4
 source_key=$5
+classification_path=${6:-}
+engine_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 python_bin=${PYTHON_BIN:-python3}
 gh_bin=${GH_BIN:-gh}
 validator=${WIKI_VALIDATOR:-scripts/wiki/validate_changes.py}
@@ -45,40 +47,17 @@ if [[ -n $(git status --porcelain) ]]; then
   exit 2
 fi
 
-metadata_values=$(
-  "$python_bin" - "$patch_path" "$metadata_path" <<'PY'
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-patch = Path(sys.argv[1]).read_bytes()
-metadata = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
-required = {"version", "changed", "bytes", "sha256", "base_ref", "seed_tree"}
-if set(metadata) != required or metadata["version"] != 1:
-    raise SystemExit("invalid patch metadata schema")
-if not isinstance(metadata["changed"], bool):
-    raise SystemExit("invalid changed flag")
-if metadata["bytes"] != len(patch):
-    raise SystemExit("patch byte count does not match metadata")
-if metadata["sha256"] != hashlib.sha256(patch).hexdigest():
-    raise SystemExit("patch checksum does not match metadata")
-if metadata["changed"] != bool(patch):
-    raise SystemExit("patch changed flag does not match content")
-base_ref = metadata["base_ref"]
-if not isinstance(base_ref, str) or not base_ref:
-    raise SystemExit("invalid patch base ref")
-seed_tree = metadata["seed_tree"]
-if seed_tree != "absent" and not (
-    isinstance(seed_tree, str)
-    and len(seed_tree) == 40
-    and all(character in "0123456789abcdef" for character in seed_tree)
-):
-    raise SystemExit("invalid Wiki seed tree")
-print(("true" if metadata["changed"] else "false") + "\t" + base_ref + "\t" + seed_tree)
-PY
-)
-IFS=$'\t' read -r artifact_changed artifact_base_ref artifact_seed_tree <<< "$metadata_values"
+manifest_args=()
+if [[ -n "$classification_path" ]]; then
+  classification_path=$(cd "$(dirname "$classification_path")" && pwd)/$(basename "$classification_path")
+  manifest_args+=(--classification "$classification_path")
+fi
+if [[ -n ${SOURCE_BASE_SHA:-} ]]; then
+  manifest_args+=(--source-base-ref "$SOURCE_BASE_SHA")
+fi
+metadata_values=$("$python_bin" "$engine_dir/artifact_manifest.py" inspect --repo . \
+  --patch "$patch_path" --metadata "$metadata_path" --source-key "$source_key" "${manifest_args[@]}")
+IFS=$'\t' read -r artifact_version artifact_changed artifact_base_ref artifact_seed_tree artifact_source_base artifact_status <<< "$metadata_values"
 
 git fetch --no-tags origin "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}"
 base_ref="refs/remotes/origin/${base_branch}"
@@ -109,6 +88,7 @@ preflight_dir=$(mktemp -d "${TMPDIR:-/tmp}/llm-wiki-preflight.XXXXXX")
 rmdir "$preflight_dir"
 preflight_registered=false
 cleanup() {
+  # Release only this invocation's disposable worktree and temporary files.
   if [[ "$preflight_registered" == "true" ]]; then
     git worktree remove --force "$preflight_dir" >/dev/null 2>&1 || true
   fi
@@ -149,6 +129,7 @@ if [[ -z "$remote_oid" && "$pr_count" == "1" ]]; then
 fi
 
 seed_wiki() {
+  # Reconstruct the managed Wiki seed before applying this incremental proposal.
   local target=$1
   local output=$2
   if [[ -n "$pending_ref" ]]; then
@@ -184,9 +165,21 @@ if [[ "$artifact_changed" == "true" ]]; then
   git -C "$preflight_dir" apply --check "$patch_path"
   git -C "$preflight_dir" apply "$patch_path"
 fi
+validation_args=()
+if [[ "$artifact_version" == '2' ]]; then
+  validation_args+=(--source-base-ref "$artifact_source_base")
+  if [[ "$artifact_status" == 'ready' ]]; then
+    cp "$classification_path" "$runtime_dir/classification.json"
+    classification_path="$runtime_dir/classification.json"
+    "$python_bin" "$engine_dir/artifact_manifest.py" inspect --repo . \
+      --patch "$patch_path" --metadata "$metadata_path" --source-key "$source_key" \
+      --source-base-ref "$SOURCE_BASE_SHA" --classification "$classification_path" >/dev/null
+    validation_args+=(--classification-report "$classification_path")
+  fi
+fi
 if ! "$python_bin" "$validator" \
   --repo "$preflight_dir" --base-ref "$seed_ref" --source-key "$source_key" \
-  --report "$report_file" >/dev/null; then
+  --report "$report_file" "${validation_args[@]}" >/dev/null; then
   echo "publish-pr: patch failed deterministic validation" >&2
   "$python_bin" - "$report_file" >&2 <<'PY'
 import json
@@ -196,6 +189,11 @@ for issue in json.load(open(sys.argv[1], encoding="utf-8")).get("issues", []):
     print(f"- {issue.get('code')}: {issue.get('path')}: {issue.get('message')}")
 PY
   exit 1
+fi
+
+# Render validated data before branch mutation; no report text becomes shell code.
+if [[ "$artifact_version" == '2' && "$artifact_status" == 'ready' ]]; then
+  "$python_bin" "$engine_dir/classification_report.py" --render-report "$classification_path" > "$runtime_dir/classification-review.md"
 fi
 
 git switch --force-create "$wiki_branch" "$base_ref"
@@ -239,6 +237,10 @@ fi
   echo "- Source: \`$source_key\`"
   echo "- Generated by the repository-local LLM Wiki workflow"
   echo "- Review the Wiki changes and any Drift sections before merging"
+  if [[ "$artifact_version" == '2' && "$artifact_status" == 'ready' ]]; then
+    echo
+    cat "$runtime_dir/classification-review.md"
+  fi
 } > "$body_file"
 
 if [[ "$pr_count" == "1" ]]; then

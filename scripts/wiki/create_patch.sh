@@ -1,24 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 || $# -gt 4 ]]; then
-  echo "usage: create_patch.sh <diff-base-ref> <patch-path> <metadata-path> [source-base-ref]" >&2
+if [[ $# -lt 3 || $# -gt 6 ]]; then
+  echo "usage: create_patch.sh <diff-base-ref> <patch-path> <metadata-path> [source-head-ref] [source-base-ref] [classification-path]" >&2
   exit 2
 fi
 
 base_ref=$1
 patch_path=$2
 metadata_path=$3
-source_base_ref=${4:-$base_ref}
+source_head_ref=${4:-$base_ref}
+source_base_ref=${5:-}
+classification_path=${6:-}
+engine_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 git rev-parse --verify "${base_ref}^{commit}" >/dev/null
-git rev-parse --verify "${source_base_ref}^{commit}" >/dev/null
-seed_tree=$(git rev-parse "${base_ref}:docs/wiki" 2>/dev/null || printf 'absent')
+git rev-parse --verify "${source_head_ref}^{commit}" >/dev/null
 mkdir -p "$(dirname "$patch_path")" "$(dirname "$metadata_path")"
 
 temporary_index=$(mktemp "${TMPDIR:-/tmp}/llm-wiki-index.XXXXXX")
 rm -f "$temporary_index"
 cleanup() {
+  # Remove only the temporary index allocated by this invocation.
   rm -f "$temporary_index"
 }
 trap cleanup EXIT
@@ -30,25 +33,13 @@ if [[ -e docs/wiki ]] || git ls-tree -d --name-only "$base_ref" docs/wiki | grep
 fi
 git diff --cached --no-ext-diff --no-textconv --binary "$base_ref" -- docs/wiki > "$patch_path"
 
-python3 - "$patch_path" "$metadata_path" "$source_base_ref" "$seed_tree" <<'PY'
-import hashlib
-import json
-import sys
-from pathlib import Path
-
-patch_path = Path(sys.argv[1])
-metadata_path = Path(sys.argv[2])
-patch = patch_path.read_bytes()
-metadata = {
-    "version": 1,
-    "changed": bool(patch),
-    "bytes": len(patch),
-    "sha256": hashlib.sha256(patch).hexdigest(),
-    "base_ref": sys.argv[3],
-    "seed_tree": sys.argv[4],
-}
-metadata_path.write_text(
-    json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-    encoding="utf-8",
-)
-PY
+manifest_args=()
+if [[ -n "$source_base_ref" ]]; then
+  manifest_args+=(--source-base-ref "$source_base_ref")
+fi
+if [[ -n "$classification_path" ]]; then
+  manifest_args+=(--classification "$classification_path")
+fi
+python3 "$engine_dir/artifact_manifest.py" create --repo . \
+  --patch "$patch_path" --metadata "$metadata_path" \
+  --diff-base-ref "$base_ref" --source-head-ref "$source_head_ref" "${manifest_args[@]}"

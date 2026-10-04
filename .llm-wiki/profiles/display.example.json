@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "display-demo",
+  "topic_types": ["screen", "module", "policy", "mechanism"],
+  "scope_dimensions": {
+    "services": {"required": true, "values": ["demo-shop"]},
+    "surfaces": {"required": true, "values": ["home", "ranking", "brand"]},
+    "clients": {"required": false, "values": ["web", "app"]}
+  },
+  "aliases": {"surfaces": {"ranking": ["랭킹", "ranking"]}},
+  "relation_rules": {
+    "applies_policy": {"from": ["screen", "module"], "to": ["policy"]},
+    "uses_module": {"from": ["screen", "module"], "to": ["module"]},
+    "exception_of": {"from": ["policy"], "to": ["policy"]},
+    "depends_on": {"from": ["screen", "module", "policy", "mechanism"], "to": ["screen", "module", "policy", "mechanism"]},
+    "related_to": {"from": ["screen", "module", "policy", "mechanism"], "to": ["screen", "module", "policy", "mechanism"]}
+  }
+}

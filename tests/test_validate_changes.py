@@ -87,6 +87,22 @@ class ValidateChangesTests(unittest.TestCase):
 
         self.assertEqual(self.issue_codes(), set())
 
+    def test_rejects_fabricated_extra_source_even_with_valid_source(self):
+        """A valid citation must not hide an additional invented head citation."""
+        self.update_search()
+        with (self.repo / 'docs/wiki/topics/search.md').open('a', encoding='utf-8') as stream:
+            stream.write(f'- `src/fabricated.py` at `{self.head_sha}`\n')
+        self.append_log()
+        self.assertIn('invalid_source_path', self.issue_codes())
+
+    def test_accepts_indented_source_explanation(self):
+        """An explanation on the next line preserves the machine citation format."""
+        self.update_search()
+        with (self.repo / 'docs/wiki/topics/search.md').open('a', encoding='utf-8') as stream:
+            stream.write('  Explains the current result contract.\n')
+        self.append_log()
+        self.assertNotIn('invalid_source_path', self.issue_codes())
+
     def test_rejects_source_change(self) -> None:
         self.write("src/search.py", "def search():\n    return ['changed']\n")
         self.append_log()
